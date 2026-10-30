@@ -180,12 +180,12 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 
 /* Video / Audio headings in the stream list */
 .group-head {
-  display: flex; align-items: center; gap: 7px; padding: 14px 10px 6px;
-  font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
-  user-select: none; -webkit-user-select: none;
+  display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 12px 10px 7px;
+  font-size: 13.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; color: var(--text);
+  border-top: 1px solid var(--line); user-select: none; -webkit-user-select: none;
 }
-.group-head:first-child { padding-top: 2px; }
-.group-head svg { width: 15px; height: 15px; flex: none; }
+.group-head:first-child { margin-top: 0; padding-top: 4px; border-top: 0; }
+.group-head svg { width: 17px; height: 17px; flex: none; color: var(--accent); }
 .group-head .count {
   margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 10px; text-align: center;
   background: var(--line); color: var(--muted); font-size: 11px; letter-spacing: 0;
@@ -195,7 +195,7 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   text-align: center; font-size: 12.5px; color: var(--faint);
 }
 .stream-list.reordering .group-empty { display: none; }
-.stream-list.reordering .group-head { color: var(--text); }
+.stream-list.reordering .group-head { color: var(--accent); }
 
 /* drag to reorder */
 .stream-item { position: relative; }
