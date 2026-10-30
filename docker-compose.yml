@@ -1,0 +1,19 @@
+services:
+  stream-transcriber:
+    # Published by the GitHub Action — swap in your GitHub username.
+    # (Or comment out "image" and uncomment "build" to build locally instead.)
+    image: ghcr.io/YOUR-GITHUB-USERNAME/stream-transcriber:latest
+    # build: .
+    container_name: stream-transcriber
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Your whisper-asr-webservice container (LAN IP of the Unraid box, not localhost).
+      # Only used on first start; afterwards change it in Admin > Settings.
+      - WHISPER_URL=http://192.168.1.10:9000
+      - TZ=Australia/Melbourne
+      # Set to 1 when the site is only reached over HTTPS (e.g. via Cloudflare Tunnel).
+      - COOKIE_SECURE=0
+    volumes:
+      - /mnt/user/appdata/stream-transcriber:/data

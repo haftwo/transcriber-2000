@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Transcriber</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg">
+</head>
+<body>
+<header class="topbar"></header>
+
+<main class="admin">
+  <h1>Admin</h1>
+  <p class="lede">Manage who can sign in, how audio is sent to Whisper, and see what the server is doing.</p>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="users">Users</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="logs">Activity log</button>
+  </nav>
+
+  <!-- overview -->
+  <section data-panel="overview">
+    <div class="stats" id="stats"></div>
+    <div class="card">
+      <div class="card-head"><h2>Streams</h2><a class="btn sm" href="/">Open streams</a></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Name</th><th>Status</th><th>Chunks</th><th>Backlog</th><th>Last speech</th><th>Added by</th></tr></thead>
+        <tbody id="stream-rows"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- users -->
+  <section data-panel="users" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Users</h2><button class="btn primary sm" onclick="openUserDialog()">Add user</button></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+        <tbody id="user-rows"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- settings -->
+  <section data-panel="settings" hidden>
+    <form id="settings-form">
+      <div class="card">
+        <h2>Whisper server</h2>
+        <p class="lede">Your whisper-asr-webservice container. Use the Unraid server's LAN IP, not localhost.</p>
+        <label class="field"><span>Whisper URL</span>
+          <div class="inline-row"><input type="url" name="whisper_url" placeholder="http://192.168.1.10:9000" required>
+          <button type="button" class="btn" onclick="testWhisper()">Test connection</button></div>
+          <div class="test-result" id="test-result"></div>
+        </label>
+        <label class="check"><input type="checkbox" name="vad_filter">
+          <span>Voice activity filter<small>Strips music and silence before transcribing. Needs the faster_whisper or whisperx engine; ignored by openai_whisper.</small></span></label>
+        <label class="check"><input type="checkbox" name="use_prompt">
+          <span>Carry context between chunks<small>Sends the previous line as a hint so names and sentences flow across chunk boundaries.</small></span></label>
+      </div>
+
+      <div class="card">
+        <h2>Transcription</h2>
+        <p class="lede">Changes to chunk length apply when a stream restarts.</p>
+        <div class="grid-2">
+          <label class="field"><span>Chunk length (seconds)</span><input type="number" name="chunk_seconds" min="5" max="60">
+            <small>Shorter = lower delay, longer = better accuracy. 10–20 works well.</small></label>
+          <label class="field"><span>Default language</span><input type="text" name="default_language" placeholder="en" maxlength="5">
+            <small>Two-letter code, or blank to auto-detect.</small></label>
+          <label class="field"><span>Silence threshold</span><input type="number" name="silence_threshold" min="0" max="5000">
+            <small>Chunks quieter than this are skipped. 0 sends everything.</small></label>
+          <label class="field"><span>Simultaneous Whisper requests</span><input type="number" name="max_concurrent" min="1" max="8">
+            <small>Raise this if you run many streams on a strong GPU.</small></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Storage</h2>
+        <label class="field" style="max-width:320px"><span>Keep transcripts for (days)</span><input type="number" name="retention_days" min="0" max="3650">
+          <small>0 keeps everything forever.</small></label>
+      </div>
+      <button class="btn primary">Save settings</button>
+    </form>
+  </section>
+
+  <!-- logs -->
+  <section data-panel="logs" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Activity log</h2><button class="btn sm" onclick="loadLogs()">Refresh</button></div>
+      <div class="table-scroll"><table class="log"><tbody id="log-rows"></tbody></table></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="user-dialog">
+  <form method="dialog" id="user-form">
+    <h3 id="ud-title">Add user</h3>
+    <p class="lede" id="ud-lede">They'll be able to view and manage streams.</p>
+    <div class="error-msg" hidden></div>
+    <label class="field" id="ud-username"><span>Username</span><input type="text" name="username" maxlength="40" autocomplete="off"></label>
+    <label class="field"><span>Password</span><input type="password" name="password" minlength="8" autocomplete="new-password" required>
+      <small>At least 8 characters.</small></label>
+    <label class="check" id="ud-admin"><input type="checkbox" name="is_admin"><span>Administrator<small>Can manage users and settings.</small></span></label>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="ud-submit">Add user</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script src="/static/admin.js"></script>
+</body>
+</html>

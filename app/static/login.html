@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Transcriber</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg">
+</head>
+<body>
+<main class="auth-page">
+  <form class="auth-card" id="form" novalidate>
+    <div class="brand"><span class="brand-mark"><span class="brand-bars"><span style="height:6px"></span><span style="height:14px"></span><span style="height:9px"></span></span></span>Transcriber</div>
+    <h1 id="title">Welcome back</h1>
+    <p class="lede" id="lede">Sign in to see your live transcripts.</p>
+    <div class="error-msg" id="err" hidden></div>
+    <label class="field"><span>Username</span><input type="text" name="username" autocomplete="username" autofocus required></label>
+    <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+    <label class="field" id="confirm-wrap" hidden><span>Confirm password</span><input type="password" name="confirm" autocomplete="new-password"></label>
+    <button class="btn primary" id="submit">Sign in</button>
+  </form>
+</main>
+<script src="/static/common.js"></script>
+<script>
+let setupMode = false;
+const f = document.getElementById("form"), err = document.getElementById("err");
+
+api("GET", "/api/setup").then(r => {
+  if (!r.needs_setup) return;
+  setupMode = true;
+  document.getElementById("title").textContent = "Create your admin account";
+  document.getElementById("lede").textContent = "First time here. This account can manage streams, users and settings.";
+  document.getElementById("confirm-wrap").hidden = false;
+  f.password.autocomplete = "new-password";
+  document.getElementById("submit").textContent = "Create account";
+});
+
+f.addEventListener("submit", async e => {
+  e.preventDefault();
+  err.hidden = true;
+  const username = f.username.value.trim(), password = f.password.value;
+  if (!username || !password) { err.textContent = "Enter a username and password"; err.hidden = false; return; }
+  if (setupMode && password !== f.confirm.value) { err.textContent = "Passwords don't match"; err.hidden = false; return; }
+  const btn = document.getElementById("submit");
+  btn.disabled = true;
+  try {
+    await api("POST", setupMode ? "/api/setup" : "/api/login", { username, password });
+    location.href = "/";
+  } catch (ex) {
+    err.textContent = ex.message; err.hidden = false; btn.disabled = false;
+    f.password.select();
+  }
+});
+</script>
+</body>
+</html>

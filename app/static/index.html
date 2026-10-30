@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transcriber</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg">
+</head>
+<body>
+<header class="topbar"></header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <h2>Streams</h2>
+      <button class="btn sm" onclick="openStreamDialog()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</button>
+    </div>
+    <ul class="stream-list" id="stream-list"></ul>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="empty" id="empty" hidden>
+      <div>
+        <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M7 8v8M17 6v12M2 11v2M22 10v4"/></svg></div>
+        <h2>Add your first stream</h2>
+        <p>Paste the address of any live HLS (.m3u8) or Icecast audio stream and its words will appear here as they're spoken.</p>
+        <button class="btn primary" onclick="openStreamDialog()">Add a stream</button>
+      </div>
+    </div>
+
+    <section id="view" hidden style="display:flex;flex-direction:column;min-height:0;flex:1">
+      <div class="stream-head">
+        <div class="stream-head-row">
+          <h1 id="s-name"></h1>
+          <span class="pill" id="s-pill"><span class="dot"></span><span></span></span>
+          <div class="head-actions">
+            <button class="btn" id="btn-listen" onclick="toggleListen()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></svg>
+              <span>Listen</span></button>
+            <button class="btn" id="btn-toggle" onclick="toggleEnabled()"></button>
+            <div class="menu">
+              <button class="btn icon" data-menu aria-label="More">
+                <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>
+              <div class="menu-pop" hidden>
+                <button onclick="openStreamDialog(current())">Edit stream</button>
+                <button onclick="restartStream()">Restart</button>
+                <hr>
+                <div class="label">Download transcript</div>
+                <button onclick="download('txt', 24)">Text · last 24 hours</button>
+                <button onclick="download('txt', 168)">Text · last 7 days</button>
+                <button onclick="download('srt', 24)">Subtitles (.srt) · last 24 hours</button>
+                <hr>
+                <button class="danger" onclick="deleteStream()">Delete stream</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="meta" id="s-meta"></div>
+        <div class="alert" id="s-alert" hidden></div>
+      </div>
+
+      <div class="toolbar">
+        <label class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="q" placeholder="Search this transcript" autocomplete="off">
+        </label>
+        <div class="player" id="player" hidden><audio id="audio" controls></audio></div>
+      </div>
+
+      <div class="transcript-wrap">
+        <div class="transcript" id="transcript"></div>
+        <button class="btn primary sm jump-live" id="jump" hidden onclick="scrollToLive()">↓ Back to live</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="stream-dialog">
+  <form method="dialog" id="stream-form">
+    <h3 id="sd-title">Add a stream</h3>
+    <p class="lede">Works with HLS (.m3u8), Icecast/Shoutcast and most other audio URLs.</p>
+    <div class="error-msg" hidden></div>
+    <label class="field"><span>Name</span><input type="text" name="name" placeholder="e.g. Radio National" maxlength="80" required></label>
+    <label class="field"><span>Stream URL</span><input type="url" name="url" placeholder="https://…/playlist.m3u8" required>
+      <small>Tip: in your browser's dev tools (Network tab) filter for “m3u8” while the station is playing.</small></label>
+    <label class="field"><span>Language</span>
+      <select name="language">
+        <option value="">Use default</option>
+        <option value="en">English</option><option value="zh">Chinese</option><option value="fr">French</option>
+        <option value="de">German</option><option value="el">Greek</option><option value="hi">Hindi</option>
+        <option value="id">Indonesian</option><option value="it">Italian</option><option value="ja">Japanese</option>
+        <option value="ko">Korean</option><option value="pt">Portuguese</option><option value="es">Spanish</option>
+        <option value="vi">Vietnamese</option><option value="ar">Arabic</option><option value="ru">Russian</option>
+      </select></label>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="sd-submit">Add and start</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/common.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
