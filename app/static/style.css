@@ -178,6 +178,25 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 .stream-item .name { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stream-item .sub { grid-column: 2; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Video / Audio headings in the stream list */
+.group-head {
+  display: flex; align-items: center; gap: 7px; padding: 14px 10px 6px;
+  font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  user-select: none; -webkit-user-select: none;
+}
+.group-head:first-child { padding-top: 2px; }
+.group-head svg { width: 15px; height: 15px; flex: none; }
+.group-head .count {
+  margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 10px; text-align: center;
+  background: var(--line); color: var(--muted); font-size: 11px; letter-spacing: 0;
+}
+.group-empty {
+  margin: 0 2px 4px; padding: 10px; border: 1px dashed var(--line-2); border-radius: 8px;
+  text-align: center; font-size: 12.5px; color: var(--faint);
+}
+.stream-list.reordering .group-empty { display: none; }
+.stream-list.reordering .group-head { color: var(--text); }
+
 /* drag to reorder */
 .stream-item { position: relative; }
 .stream-item .name, .stream-item .sub { padding-right: 18px; }
@@ -340,7 +359,25 @@ td .muted, .muted { color: var(--muted); }
 }
 .clip-more:hover { background: var(--wave-played); }
 .clip-more:disabled { opacity: .4; }
-.clip-main { min-width: 0; }
+.clip-main { min-width: 0; position: relative; }
+/* video thumbnails (streams with video only) */
+.filmstrip {
+  position: relative; display: flex; height: 56px; margin-bottom: 4px; overflow: hidden; cursor: pointer;
+  background: #000; border-left: 3px solid var(--wave-edge); border-right: 3px solid var(--wave-edge);
+}
+.filmstrip img { flex: none; height: 100%; object-fit: cover; display: block; user-select: none; box-shadow: inset -1px 0 0 rgba(0,0,0,.5); }
+.film-head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--wave-head); box-shadow: 0 0 0 1px rgba(255,255,255,.5); pointer-events: none; }
+.clipbar.has-video .clip-more { margin-top: 93px; }
+.thumb-peek {
+  position: absolute; bottom: calc(100% + 10px); width: 256px; transform: translateX(-50%); z-index: 6;
+  pointer-events: none; background: #000; border-radius: 8px; overflow: hidden;
+  box-shadow: var(--shadow), 0 0 0 1px var(--line);
+}
+.thumb-peek img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; }
+.thumb-peek span {
+  display: block; padding: 4px 0 5px; text-align: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 600; color: #fff; background: #000;
+}
 .wave-box {
   position: relative; height: 106px; background: var(--wave-bg); cursor: pointer;
   border-left: 3px solid var(--wave-edge); border-right: 3px solid var(--wave-edge);
@@ -414,7 +451,8 @@ input[type=date], input[type=time] {
   .head-actions { margin-left: 0; width: 100%; }
   .clipbar { grid-template-columns: 1fr 1fr; padding: 10px 12px 6px; gap: 8px; }
   .clip-main { grid-column: 1 / -1; grid-row: 1; }
-  .clip-more { margin-top: 0; height: 34px; }
+  .clip-more, .clipbar.has-video .clip-more { margin-top: 0; height: 34px; }
+  .filmstrip { height: 44px; }
   .wave-box { height: 84px; }
   .clip-time { display: none; }
   .clip-dl { padding: 0 12px; }

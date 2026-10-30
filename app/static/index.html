@@ -86,6 +86,9 @@
       <div class="clipbar" id="clipbar" hidden>
         <button class="btn clip-more" id="clip-earlier" title="Add 30 seconds before">« Earlier</button>
         <div class="clip-main">
+          <!-- video streams only: a strip of thumbnails along the timeline, plus a bigger preview on hover -->
+          <div class="thumb-peek" id="thumb-peek" hidden><img alt=""><span></span></div>
+          <div class="filmstrip" id="filmstrip" hidden title="Click to jump to that point"></div>
           <div class="wave-box" id="wave-box" title="Click to jump to that point">
             <canvas id="wave"></canvas>
             <div class="clip-loading" id="clip-loading">Loading audio…</div>
@@ -149,6 +152,13 @@
         <option value="ko">Korean</option><option value="pt">Portuguese</option><option value="es">Spanish</option>
         <option value="vi">Vietnamese</option><option value="ar">Arabic</option><option value="ru">Russian</option>
       </select></label>
+    <label class="field"><span>Group</span>
+      <select name="category">
+        <option value="">Automatic (Video if the stream has pictures)</option>
+        <option value="video">Video</option>
+        <option value="audio">Audio</option>
+      </select>
+      <small>Where it sits in the Streams list. You can also drag it between the headings.</small></label>
     <div class="dialog-actions">
       <button class="btn" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" value="ok" id="sd-submit">Add and start</button>

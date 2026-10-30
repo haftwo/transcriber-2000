@@ -24,7 +24,8 @@ Sign in with the username and password your admin gave you. You stay signed in f
 2. Give it a name, for example `ABC Melbourne`.
 3. Paste the stream URL.
 4. Optionally set a language (`en`, `fr`, …). Leave it blank to use the default from Admin → Settings.
-5. Save.
+5. Optionally choose a **Group**. Leave it on **Automatic** and it goes under **Video** if the stream has pictures, otherwise **Audio**.
+6. Save.
 
 It starts straight away. The first lines appear after one chunk of audio, 15 seconds by default.
 
@@ -76,6 +77,16 @@ Every stream is recorded while it runs, so you can hear any line again.
 - **« Earlier** and **Later »** add 30 seconds to either end, up to 15 minutes in total.
 - **Download** saves exactly what the player shows as an MP3.
 
+### Video streams
+
+If a stream carries video (a TV channel's HLS feed, for example), the player also shows a **filmstrip** of pictures above the waveform:
+
+- **Hover** over the filmstrip or waveform to see a larger picture of that moment, with its time.
+- **Click** the filmstrip to jump there, just like the waveform.
+- A line marks where you are as it plays.
+
+A picture is saved every 5 seconds while the stream records. Each one is the nearest frame at or just before its moment. Pictures are kept as long as the audio. Older recordings, and streams recorded while **Video thumbnails** was off, show the waveform only.
+
 A line can't be played if its audio has expired (recordings are kept 7 days by default) or if it was transcribed while recording was off. A clip can't span a dropout: each reconnect starts a new recording.
 
 ## Downloading
@@ -89,7 +100,7 @@ Times use the server's time zone (the container's `TZ` setting).
 
 ## Arranging, editing and stopping streams
 
-- **Reorder:** drag streams in the list. The order is saved for everyone.
+- **Group and reorder:** the list has two headings, **Video** and **Audio**. Drag a stream up or down to reorder it, or across a heading to move it into the other group. Changing the **Group** in **Edit stream** does the same. The order and groups are saved for everyone.
 - **Stop / Start:** the button next to **Listen**. A stopped stream keeps its transcript and recordings but stops listening.
 - **Edit stream** (⋯ menu): change its name, URL or language. Changing the URL or language restarts it.
 - **Restart** (⋯ menu): reconnect now, for example after fixing an expired URL.

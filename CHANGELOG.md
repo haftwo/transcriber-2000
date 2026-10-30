@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 — 2026-10-31
+
+### Added
+
+- Video thumbnails: for streams with video, a picture is saved every 5 seconds and shown as a filmstrip along the playback timeline, with a larger preview on hover and click-to-jump
+- Admin → Settings → Recording: **Video thumbnails** switch (on by default)
+- **Video** and **Audio** headings in the Streams list. Drag streams between them; new streams are filed automatically by whether they have video, or pick a group when adding or editing
+
 ## 1.0.0 — 2026-10-31
 
 First release on GitHub.

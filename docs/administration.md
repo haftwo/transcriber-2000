@@ -51,6 +51,7 @@ Click **Save settings** at the bottom. Most changes apply to the next chunk; rec
 | Keep transcripts | 30 days | Older lines are deleted. 0 keeps them forever. Lines stay after their audio is deleted |
 | Record stream audio | On | Records every stream so lines can be played back |
 | Recording quality | 96 kbps | MP3 bitrate: 48 (speech only), 64, 96, 128 or 192 |
+| Video thumbnails | On | For streams with video, saves a picture every 5 seconds for the player's filmstrip. Applies when a stream next starts |
 | Keep recordings | 7 days | Older audio is deleted hourly, and straight away when you save a shorter time. 0 keeps it forever |
 
 The activity log keeps 14 days.
@@ -76,7 +77,8 @@ The activity log keeps 14 days.
     └── <stream id>/
         └── <recording id>/
             ├── 000000.mp3  one file per minute of a continuous recording
-            └── 000001.mp3
+            ├── 000001.mp3
+            └── thumbs/     video streams only: 000000.jpg, 000001.jpg … one every 5 s
 ```
 
 ## Disk space
@@ -88,7 +90,7 @@ Recordings take the most space:
 | 96 kbps | about 1 GB | about 7 GB |
 | 64 kbps | about 0.7 GB | about 5 GB |
 
-Transcripts are tiny by comparison. Old audio and lines are pruned automatically according to the retention settings. To free space immediately, use **Delete old audio now** in Admin → Settings.
+Video thumbnails add roughly 0.1 GB per video stream per day. Transcripts are tiny by comparison. Old audio and lines are pruned automatically according to the retention settings. To free space immediately, use **Delete old audio now** in Admin → Settings.
 
 ## Backups
 

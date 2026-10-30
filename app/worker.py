@@ -27,6 +27,8 @@ from .db import rec_dir
 
 SAMPLE_RATE = 16000
 REC_SEG_SECONDS = 60  # length of each recorded MP3 file
+THUMB_SECONDS = 5     # one video thumbnail every this many seconds (streams with video only)
+THUMB_HEIGHT = 144    # pixels; width follows the video's shape
 BYTES_PER_SEC = SAMPLE_RATE * 2  # s16le mono
 
 # Whisper's favourite phantom lines on music / silence.
@@ -147,6 +149,7 @@ class StreamWorker:
         self.last_text = ""
         self.rec = None        # current recording row (dict) while audio flows
         self.rec_bytes = 0     # PCM bytes received in the current recording
+        self.has_video = None  # does the stream carry video? (probed once per worker)
 
     # lifecycle -------------------------------------------------------------
     def start(self):
@@ -182,17 +185,50 @@ class StreamWorker:
                 "last_text_at": self.last_text_at}
 
     # reader ----------------------------------------------------------------
-    def _ffmpeg_cmd(self, rec_folder=None):
+    NET_OPTS = [
+        # network only — never let a stream URL read local files
+        "-protocol_whitelist", "http,https,tcp,tls,crypto,hls,httpproxy",
+        "-user_agent", "Mozilla/5.0 (Transcriber2000)",
+    ]
+
+    async def _probe_video(self):
+        """True if the stream has a video track. Asked once per worker; a failed probe counts as no video."""
+        if self.has_video is not None:
+            return self.has_video
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "error", *self.NET_OPTS, "-rw_timeout", "15000000",
+                "-select_streams", "v", "-show_entries", "stream=codec_type", "-of", "csv=p=0", self.url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=25)
+            self.has_video = b"video" in out
+        except (asyncio.TimeoutError, OSError):
+            if proc and proc.returncode is None:
+                proc.kill()
+            return False  # try again on the next take
+        if self.has_video and self.m.db.setting("video_thumbs", int):
+            self.m.db.log("info", "Stream has video: saving timeline thumbnails", self.id)
+        # file a new stream under Video or Audio in the sidebar (only if nobody has chosen yet)
+        row = self.m.db.one("SELECT category FROM streams WHERE id=?", (self.id,))
+        if row and not row["category"]:
+            cat = "video" if self.has_video else "audio"
+            self.m.db.x("UPDATE streams SET category=? WHERE id=? AND category=''", (cat, self.id))
+            self.m.broker.publish({"type": "category", "stream_id": self.id, "category": cat})
+        return self.has_video
+
+    def _ffmpeg_cmd(self, rec_folder=None, thumbs=False):
         # asetpts=N/SR/TB numbers the audio by sample count, so a gap in the source
         # can't push the recording and the transcript out of step with each other.
         cmd = [
-            "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
-            # network only — never let a stream URL read local files
-            "-protocol_whitelist", "http,https,tcp,tls,crypto,hls,httpproxy",
-            "-user_agent", "Mozilla/5.0 (Transcriber2000)",
+            "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", *self.NET_OPTS,
             "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10",
             "-rw_timeout", "20000000",
+        ]
+        if thumbs:
+            cmd += ["-skip_frame:v", "nokey"]  # decode keyframes only: thumbnails cost almost no CPU
+        cmd += [
             "-i", self.url,
             "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-af", "asetpts=N/SR/TB",
             "-f", "s16le", "pipe:1",
@@ -206,19 +242,30 @@ class StreamWorker:
                 "-segment_format_options", "id3v2_version=0:write_xing=0",
                 "-reset_timestamps", "1", os.path.join(rec_folder, "%06d.mp3"),
             ]
+        if rec_folder and thumbs:
+            # thumbs/000000.jpg is the first frame, 000001.jpg is THUMB_SECONDS later, and so on.
+            # round=up makes each one the last keyframe at or before its moment (round=near would
+            # take a frame up to half an interval late).
+            cmd += [
+                "-map", "0:v:0", "-an", "-sn",
+                "-vf", f"setpts=PTS-STARTPTS,fps=1/{THUMB_SECONDS}:round=up,scale=-2:{THUMB_HEIGHT}",
+                "-q:v", "7", "-start_number", "0", "-f", "image2",
+                os.path.join(rec_folder, "thumbs", "%06d.jpg"),
+            ]
         return cmd
 
     # recording -------------------------------------------------------------
-    def _rec_begin(self):
+    def _rec_begin(self, thumbs=False):
         """Create the row and folder for a new take (before ffmpeg starts)."""
         if not self.m.db.setting("record_audio", int):
             return None
-        rid = self.m.db.x("INSERT INTO recordings(stream_id, started, length, seg_seconds) VALUES (?, ?, 0, ?)",
-                          (self.id, time.time(), REC_SEG_SECONDS))
+        rid = self.m.db.x("INSERT INTO recordings(stream_id, started, length, seg_seconds, thumb_seconds) "
+                          "VALUES (?, ?, 0, ?, ?)",
+                          (self.id, time.time(), REC_SEG_SECONDS, THUMB_SECONDS if thumbs else 0))
         self.rec = self.m.db.one("SELECT * FROM recordings WHERE id=?", (rid,))
         self.rec_bytes = 0
         folder = rec_dir(self.rec)
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(os.path.join(folder, "thumbs") if thumbs else folder, exist_ok=True)
         return folder
 
     def _rec_end(self, got_audio):
@@ -245,9 +292,11 @@ class StreamWorker:
             take_start = time.time()   # wall-clock time of the first sample in this take
             pos = 0                     # PCM bytes received in this take
             try:
-                folder = self._rec_begin()
+                has_video = await self._probe_video()
+                thumbs = has_video and self.m.db.setting("record_audio", int) and self.m.db.setting("video_thumbs", int)
+                folder = self._rec_begin(bool(thumbs))
                 self.proc = await asyncio.create_subprocess_exec(
-                    *self._ffmpeg_cmd(folder), stdout=asyncio.subprocess.PIPE,
+                    *self._ffmpeg_cmd(folder, bool(folder and thumbs)), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE)
                 err_task = asyncio.create_task(self._drain_stderr(stderr_tail))
                 chunk_secs = self.m.db.setting("chunk_seconds", int)

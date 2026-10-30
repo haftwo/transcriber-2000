@@ -76,6 +76,16 @@ def clean_lang(lang):
     return lang
 
 
+CATEGORIES = ("", "video", "audio")   # '' = decide automatically from whether the stream has video
+
+
+def clean_category(cat):
+    cat = (cat or "").strip().lower()
+    if cat not in CATEGORIES:
+        raise HTTPException(400, "Group should be 'video', 'audio', or blank to decide automatically")
+    return cat
+
+
 def check_username(name):
     name = (name or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._@-]{2,40}", name):
@@ -187,9 +197,10 @@ async def api_streams(request):
     if not name:
         raise HTTPException(400, "Give the stream a name")
     url, lang = clean_url(data.get("url")), clean_lang(data.get("language"))
+    cat = clean_category(data.get("category"))
     pos = db.one("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM streams")["p"]  # new streams go to the bottom
-    sid = db.x("INSERT INTO streams(name, url, language, enabled, created_by, created, position) "
-               "VALUES (?, ?, ?, 1, ?, ?, ?)", (name, url, lang, user["username"], time.time(), pos))
+    sid = db.x("INSERT INTO streams(name, url, language, enabled, created_by, created, position, category) "
+               "VALUES (?, ?, ?, 1, ?, ?, ?, ?)", (name, url, lang, user["username"], time.time(), pos, cat))
     db.log("info", f"{user['username']} added stream '{name}'", sid)
     await manager.start(sid)
     return JSONResponse(stream_out(db.one("SELECT * FROM streams WHERE id=?", (sid,))), 201)
@@ -217,8 +228,11 @@ async def api_stream(request):
     url = clean_url(data["url"]) if "url" in data else s["url"]
     lang = clean_lang(data["language"]) if "language" in data else s["language"]
     enabled = int(bool(data.get("enabled", s["enabled"])))
-    db.x("UPDATE streams SET name=?, url=?, language=?, enabled=? WHERE id=?",
-         (name, url, lang, enabled, sid))
+    cat = clean_category(data["category"]) if "category" in data else s["category"]
+    db.x("UPDATE streams SET name=?, url=?, language=?, enabled=?, category=? WHERE id=?",
+         (name, url, lang, enabled, cat, sid))
+    if cat != s["category"]:
+        manager.broker.publish({"type": "category", "stream_id": sid, "category": cat})
     changed = url != s["url"] or lang != s["language"]
     if enabled and (changed or not s["enabled"] or data.get("restart")):
         await manager.start(sid)
@@ -230,19 +244,28 @@ async def api_stream(request):
 
 
 async def api_stream_order(request):
-    """Save the sidebar order after a drag. Body: {"ids": [3, 1, 2, ...]} top to bottom."""
+    """Save the sidebar after a drag. Body: {"ids": [3, 1, 2, ...]} top to bottom, and optionally
+    {"categories": {"3": "video", "1": "audio", ...}} for streams dragged into another group."""
     need_user(request)
     data = await body(request)
     ids = data.get("ids")
     if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
         raise HTTPException(400, "Expected a list of stream ids")
+    cats = data.get("categories") or {}
+    if not isinstance(cats, dict):
+        raise HTTPException(400, "categories should map stream ids to 'video' or 'audio'")
+    for key, cat in cats.items():
+        if not str(key).isdigit() or cat not in ("video", "audio"):
+            raise HTTPException(400, "categories should map stream ids to 'video' or 'audio'")
+        db.x("UPDATE streams SET category=? WHERE id=?", (cat, int(key)))
     known = [r["id"] for r in db.q("SELECT id FROM streams ORDER BY position, id")]
     # ids sent first (in that order), then any streams the browser didn't know about yet
     order = [i for i in dict.fromkeys(ids) if i in set(known)] + [i for i in known if i not in set(ids)]
     for pos, sid in enumerate(order):
         db.x("UPDATE streams SET position=? WHERE id=?", (pos, sid))
-    manager.broker.publish({"type": "order", "ids": order})
-    return JSONResponse({"ids": order})
+    categories = {r["id"]: r["category"] for r in db.q("SELECT id, category FROM streams")}
+    manager.broker.publish({"type": "order", "ids": order, "categories": categories})
+    return JSONResponse({"ids": order, "categories": categories})
 
 
 async def api_segments(request):
@@ -338,6 +361,48 @@ async def api_audio(request):
         "X-Rec-Started": f"{rec['started']:.3f}",
         "X-Rec-Length": f"{length:.3f}",
     })
+
+
+async def api_thumbs(request):
+    """Which video thumbnails exist for part of a recording: ?rec=<id>&start=<s>&end=<s>.
+    Returns {"interval": seconds between thumbnails (0 = no video), "n": [thumbnail numbers]};
+    thumbnail n shows the moment n * interval seconds into the take."""
+    need_user(request)
+    sid = request.path_params["sid"]
+    qp = request.query_params
+    try:
+        rec_id, start, end = int(qp["rec"]), float(qp["start"]), float(qp["end"])
+    except (KeyError, ValueError):
+        raise HTTPException(400, "rec, start and end are required")
+    rec = db.one("SELECT * FROM recordings WHERE id=? AND stream_id=?", (rec_id, sid))
+    if not rec:
+        raise HTTPException(404, "There's no recording for this part of the stream")
+    step = rec["thumb_seconds"]
+    if not step:
+        return JSONResponse({"interval": 0, "n": []})
+    live = manager.live_length(rec_id)
+    folder = os.path.join(rec_dir(rec), "thumbs")
+    try:
+        have = {int(f[:-4]) for f in os.listdir(folder) if f.endswith(".jpg") and f[:-4].isdigit()}
+    except FileNotFoundError:
+        have = set()
+    if live is not None and have:
+        have.discard(max(have))  # the newest file on a live take may still be being written
+    lo, hi = max(0, int(start // step) - 1), int(end // step) + 1
+    return JSONResponse({"interval": step, "n": sorted(n for n in have if lo <= n <= hi)},
+                        headers={"Cache-Control": "private, max-age=10"})
+
+
+async def api_thumb(request):
+    """One thumbnail image: /api/streams/<sid>/thumbs/<rec>/<n>.jpg"""
+    need_user(request)
+    sid, rec_id, n = request.path_params["sid"], request.path_params["rec"], request.path_params["n"]
+    rec = db.one("SELECT * FROM recordings WHERE id=? AND stream_id=?", (rec_id, sid))
+    path = os.path.join(rec_dir(rec), "thumbs", f"{n:06d}.jpg") if rec else ""
+    if not rec or not os.path.isfile(path):
+        raise HTTPException(404, "No thumbnail")
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=604800, immutable"})
 
 
 def _dir_size(path):
@@ -455,7 +520,7 @@ async def api_settings(request):
     numeric = {"chunk_seconds": (5, 60), "silence_threshold": (0, 5000),
                "retention_days": (0, 3650), "max_concurrent": (1, 8),
                "vad_filter": (0, 1), "use_prompt": (0, 1), "record_audio": (0, 1),
-               "audio_bitrate": (32, 320), "audio_retention_days": (0, 3650)}
+               "audio_bitrate": (32, 320), "audio_retention_days": (0, 3650), "video_thumbs": (0, 1)}
     for key, val in data.items():
         if key not in DEFAULT_SETTINGS:
             continue
@@ -580,6 +645,8 @@ routes = [
     Route("/api/streams/{sid:int}/segments", api_segments),
     Route("/api/streams/{sid:int}/export", api_export),
     Route("/api/streams/{sid:int}/audio", api_audio),
+    Route("/api/streams/{sid:int}/thumbs", api_thumbs),
+    Route("/api/streams/{sid:int}/thumbs/{rec:int}/{n:int}.jpg", api_thumb),
     Route("/api/events", api_events),
     Route("/api/admin/users", api_users, methods=["GET", "POST"]),
     Route("/api/admin/users/{uid:int}", api_user, methods=["PATCH", "DELETE"]),

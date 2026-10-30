@@ -51,17 +51,30 @@ const GRIP = `<span class="grip" title="Drag to reorder" aria-hidden="true"><svg
   <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/>
   <circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>`;
 
+// The list is split under two headings. A stream with no group yet ('' until the server has
+// checked whether it has video) shows under Audio.
+const GROUPS = [
+  { cat: "video", label: "Video", icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg>` },
+  { cat: "audio", label: "Audio", icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/></svg>` },
+];
+const groupOf = s => (s.category === "video" ? "video" : "audio");
+
 function renderSidebar() {
   if (drag) return; // don't redraw the list while someone is dragging it
   const ul = $("stream-list");
   const sorted = [...streams.values()].sort(byPosition);
-  ul.innerHTML = sorted.map(s => `
+  ul.innerHTML = GROUPS.map(g => {
+    const members = sorted.filter(s => groupOf(s) === g.cat);
+    return `<li class="group-head" data-cat="${g.cat}">${g.icon}<span>${g.label}</span><span class="count">${members.length}</span></li>` +
+      (members.length ? "" : `<li class="group-empty">Drag streams here</li>`) +
+      members.map(s => `
     <li class="stream-item ${s.id === selected ? "active" : ""}" data-id="${s.id}" title="${esc(s.name)}">
       <span class="dot ${s.enabled ? s.status : ""}"></span>
       <span class="name">${esc(s.name)}</span>
       <span class="sub">${esc(subline(s))}</span>
-      ${sorted.length > 1 ? GRIP : ""}
+      ${GRIP}
     </li>`).join("");
+  }).join("");
   ul.querySelectorAll(".stream-item").forEach(li => {
     li.addEventListener("click", () => {
       if (justDragged) return;
@@ -76,11 +89,22 @@ function renderSidebar() {
 let drag = null;
 let justDragged = false;
 
+// Walk the list top to bottom: each stream belongs to the heading above it.
+function readList(ul) {
+  const ids = [], cats = {};
+  let cat = "video";
+  for (const el of ul.children) {
+    if (el.classList.contains("group-head")) cat = el.dataset.cat;
+    else if (el.dataset.id) { ids.push(Number(el.dataset.id)); cats[el.dataset.id] = cat; }
+  }
+  return { ids, cats };
+}
+
 function startDrag(e, li) {
-  if (e.button !== 0 || streams.size < 2) return;
+  if (e.button !== 0) return;
   if (e.pointerType !== "mouse" && !e.target.closest(".grip")) return;
   const ul = $("stream-list");
-  const before = [...ul.children].map(el => Number(el.dataset.id));
+  const before = readList(ul);
   const startY = e.clientY;
   let active = false;
 
@@ -93,8 +117,9 @@ function startDrag(e, li) {
       ul.classList.add("reordering");
     }
     ev.preventDefault();
-    // put the dragged item before the first other item whose middle is below the pointer
-    const others = [...ul.children].filter(el => el !== li);
+    // put the dragged item before the first other row whose middle is below the pointer
+    // (never above the first heading, and ignoring the hidden "Drag streams here" hints)
+    const others = [...ul.children].filter(el => el !== li && el !== ul.firstElementChild && el.offsetHeight);
     const next = others.find(el => { const r = el.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
     if (next) { if (li.nextElementSibling !== next) ul.insertBefore(li, next); }
     else if (ul.lastElementChild !== li) ul.appendChild(li);
@@ -113,9 +138,12 @@ function startDrag(e, li) {
     ul.classList.remove("reordering");
     drag = null;
     justDragged = true; setTimeout(() => { justDragged = false; }, 0); // swallow the click that follows
-    const after = [...ul.children].map(el => Number(el.dataset.id));
-    if (ev.type === "pointercancel" || after.join() === before.join()) { renderSidebar(); return; }
-    saveOrder(after, before);
+    const after = readList(ul);
+    const moved = Object.keys(after.cats).filter(id => after.cats[id] !== groupOf(streams.get(Number(id))));
+    if (ev.type === "pointercancel" || (after.ids.join() === before.ids.join() && !moved.length)) { renderSidebar(); return; }
+    const changed = Object.fromEntries(moved.map(id => [id, after.cats[id]]));
+    const was = Object.fromEntries(moved.map(id => [id, streams.get(Number(id)).category]));
+    saveOrder(after.ids, before.ids, changed, was);
   };
 
   window.addEventListener("pointermove", move, { passive: false });
@@ -123,17 +151,21 @@ function startDrag(e, li) {
   window.addEventListener("pointercancel", end);
 }
 
-function applyOrder(ids) {
+function applyOrder(ids, categories) {
   ids.forEach((id, i) => { const s = streams.get(id); if (s) s.position = i; });
+  if (categories) for (const [id, cat] of Object.entries(categories)) {
+    const s = streams.get(Number(id)); if (s) s.category = cat;
+  }
 }
 
-async function saveOrder(ids, previous) {
-  applyOrder(ids);
+async function saveOrder(ids, previous, categories = {}, previousCats = {}) {
+  applyOrder(ids, categories);
   renderSidebar();
   try {
-    applyOrder((await api("PUT", "/api/streams/order", { ids })).ids);
+    const r = await api("PUT", "/api/streams/order", { ids, categories });
+    applyOrder(r.ids, r.categories);
   } catch (err) {
-    applyOrder(previous); // put it back the way it was
+    applyOrder(previous, previousCats); // put it back the way it was
     toast(`Couldn't save the new order: ${err.message}`, true);
   }
   renderSidebar();
@@ -303,8 +335,9 @@ function connectEvents() {
   const es = new EventSource("/api/events");
   es.onmessage = e => {
     const ev = JSON.parse(e.data);
-    if (ev.type === "order") { applyOrder(ev.ids); renderSidebar(); return; } // reordered (maybe in another tab)
+    if (ev.type === "order") { applyOrder(ev.ids, ev.categories); renderSidebar(); return; } // reordered (maybe in another tab)
     const s = streams.get(ev.stream_id);
+    if (ev.type === "category") { if (s) { s.category = ev.category; renderSidebar(); } return; }
     if (ev.type === "deleted") {
       streams.delete(ev.stream_id);
       renderSidebar();
@@ -342,7 +375,7 @@ function openStreamDialog(s) {
   editingId = s?.id ?? null;
   $("sd-title").textContent = s ? "Edit stream" : "Add a stream";
   $("sd-submit").textContent = s ? "Save changes" : "Add and start";
-  if (s) { f.name.value = s.name; f.url.value = s.url; f.language.value = s.language; }
+  if (s) { f.name.value = s.name; f.url.value = s.url; f.language.value = s.language; f.category.value = s.category || ""; }
   dlg.showModal();
 }
 
@@ -350,7 +383,8 @@ $("stream-form").addEventListener("submit", async e => {
   e.preventDefault();
   const dlg = $("stream-dialog"), f = e.target, err = f.querySelector(".error-msg");
   if (e.submitter?.value === "cancel") return dlg.close();
-  const payload = { name: f.name.value.trim(), url: f.url.value.trim(), language: f.language.value };
+  const payload = { name: f.name.value.trim(), url: f.url.value.trim(), language: f.language.value,
+                    category: f.category.value };
   try {
     const s = editingId
       ? await api("PATCH", `/api/streams/${editingId}`, payload)
@@ -525,6 +559,7 @@ async function loadClip(playAt, autoplay) {
     renderTicks();
     drawWave();
     if (autoplay) clipAudio.play().catch(() => {});
+    loadThumbs(token, c);
   } catch (ex) {
     if (token !== clipToken) return;
     toast(ex.message, true);
@@ -589,7 +624,77 @@ function drawWave() {
   ctx.fillRect(Math.round(played) - 1, 0, 2, h);
 
   $("clip-time").textContent = fmtClock(c.recStarted + c.start + clipAudio.currentTime);
+  const head = $("filmstrip").querySelector(".film-head");
+  if (head) head.style.left = `${Math.max(0, Math.min(100, clipAudio.currentTime / c.duration * 100))}%`;
 }
+
+// ---------------------------------------------------------------- video thumbnails
+// Streams with video save a small picture every few seconds (thumbnail n = n * interval s into the take).
+// They show as a filmstrip above the waveform, with a larger preview under the pointer.
+async function loadThumbs(token, c) {
+  let thumbs = null;
+  try {
+    const r = await api("GET", `/api/streams/${c.streamId}/thumbs?rec=${c.rec}&start=${c.from.toFixed(2)}&end=${c.to.toFixed(2)}`);
+    if (r.interval && r.n.length) thumbs = { interval: r.interval, n: r.n };
+  } catch (e) { /* no thumbnails is fine: audio-only view */ }
+  if (token !== clipToken) return;
+  c.thumbs = thumbs;
+  renderFilmstrip();
+}
+
+function thumbAt(c, t) {
+  // the thumbnail shown at t seconds into the take: the latest one taken at or before t
+  const ns = c.thumbs.n, want = Math.floor(t / c.thumbs.interval);
+  let lo = 0, hi = ns.length - 1, best = ns[0];
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (ns[mid] <= want) { best = ns[mid]; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best;
+}
+const thumbUrl = (c, n) => `/api/streams/${c.streamId}/thumbs/${c.rec}/${n}.jpg`;
+
+function renderFilmstrip() {
+  const c = clip, el = $("filmstrip");
+  const on = !!(c?.thumbs && c.duration);
+  $("clipbar").classList.toggle("has-video", on);
+  if (!on) { el.hidden = true; el.innerHTML = ""; hidePeek(); return; }
+  el.hidden = false;
+  const w = el.clientWidth || 600, h = el.clientHeight || 56;
+  const count = Math.max(1, Math.round(w / (h * 16 / 9)));   // tiles roughly 16:9
+  let html = "";
+  for (let i = 0; i < count; i++) {
+    const n = thumbAt(c, c.start + (i + 0.5) * c.duration / count);
+    html += `<img src="${thumbUrl(c, n)}" style="width:${100 / count}%" alt="" draggable="false">`;
+  }
+  el.innerHTML = html + `<span class="film-head"></span>`;
+  drawWave();
+}
+
+function peekAt(e) {
+  const c = clip, p = $("thumb-peek");
+  if (!c?.thumbs || !c.duration || e.target.closest(".clip-btn, .clip-actions")) return hidePeek();
+  const r = $("wave-box").getBoundingClientRect(), main = p.parentElement.getBoundingClientRect();
+  const frac = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
+  const t = c.start + frac * c.duration;
+  const img = p.firstElementChild, url = thumbUrl(c, thumbAt(c, t));
+  if (img.getAttribute("src") !== url) img.src = url;
+  p.lastElementChild.textContent = fmtClock(c.recStarted + t);
+  const half = (p.offsetWidth || 256) / 2;
+  p.style.left = `${Math.min(Math.max(e.clientX - main.left, half), main.width - half)}px`;
+  p.hidden = false;
+}
+function hidePeek() { $("thumb-peek").hidden = true; }
+for (const id of ["wave-box", "filmstrip"]) {
+  $(id).addEventListener("mousemove", peekAt);
+  $(id).addEventListener("mouseleave", hidePeek);
+}
+$("filmstrip").addEventListener("click", e => {
+  if (!clip?.duration) return;
+  const r = $("filmstrip").getBoundingClientRect();
+  clipAudio.currentTime = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1) * clip.duration;
+  if (clipAudio.paused) clipAudio.play().catch(() => {});
+});
 
 function renderTicks() {
   const c = clip, box = $("ticks");
@@ -662,6 +767,7 @@ function closeClip() {
   clipAudio.load();
   if (clip?.url) URL.revokeObjectURL(clip.url);
   clip = null;
+  renderFilmstrip();
   $("clipbar").hidden = true;
   $("clipbar").classList.remove("playing", "loading");
   markLines();
@@ -697,7 +803,7 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") closeClip();
   else if (e.key === " " && !e.target.closest("button")) { e.preventDefault(); $("clip-play").click(); }
 });
-window.addEventListener("resize", () => { if (clip?.duration) { renderTicks(); drawWave(); } });
+window.addEventListener("resize", () => { if (clip?.duration) { renderTicks(); renderFilmstrip(); drawWave(); } });
 
 
 // ---------------------------------------------------------------- go to a date and time

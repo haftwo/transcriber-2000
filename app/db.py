@@ -22,6 +22,7 @@ DEFAULT_SETTINGS = {
     "record_audio": "1",            # keep a recording of every stream so lines can be played back
     "audio_bitrate": "96",          # kbps, MP3
     "audio_retention_days": "7",    # recordings older than this are deleted (0 = keep forever)
+    "video_thumbs": "1",            # streams with video: save a thumbnail every few seconds for the player timeline
 }
 
 SCHEMA = """
@@ -86,7 +87,12 @@ class DB:
             if "rec_id" not in cols:  # upgrade from the first version
                 self.conn.execute("ALTER TABLE segments ADD COLUMN rec_id INTEGER")
                 self.conn.execute("ALTER TABLE segments ADD COLUMN rec_offset REAL")
+            rcols = {r[1] for r in self.conn.execute("PRAGMA table_info(recordings)")}
+            if "thumb_seconds" not in rcols:  # upgrade: video thumbnails (0 = this take has none)
+                self.conn.execute("ALTER TABLE recordings ADD COLUMN thumb_seconds INTEGER NOT NULL DEFAULT 0")
             scols = {r[1] for r in self.conn.execute("PRAGMA table_info(streams)")}
+            if "category" not in scols:  # upgrade: sidebar groups ('' = not sorted yet, 'video' or 'audio')
+                self.conn.execute("ALTER TABLE streams ADD COLUMN category TEXT NOT NULL DEFAULT ''")
             if "position" not in scols:  # upgrade: keep the old alphabetical order as the starting order
                 self.conn.execute("ALTER TABLE streams ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
                 ids = [r[0] for r in self.conn.execute("SELECT id FROM streams ORDER BY name COLLATE NOCASE")]
@@ -167,6 +173,17 @@ class DB:
             for name in names:
                 if whole or int(name[:-4]) < n:
                     remove(os.path.join(folder, name))
+            if rec.get("thumb_seconds") and not whole:
+                # thumbnail k shows the moment k * thumb_seconds into the take
+                k_cut = int((cutoff - rec["started"]) // rec["thumb_seconds"])
+                tdir = os.path.join(folder, "thumbs")
+                try:
+                    thumbs = [f for f in os.listdir(tdir) if f.endswith(".jpg")]
+                except FileNotFoundError:
+                    thumbs = []
+                for name in thumbs:
+                    if int(name[:-4]) < k_cut:
+                        remove(os.path.join(tdir, name))
             if whole:
                 shutil.rmtree(folder, ignore_errors=True)
                 self.x("DELETE FROM recordings WHERE id=?", (rec["id"],))

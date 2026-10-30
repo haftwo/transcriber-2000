@@ -2,6 +2,7 @@
 
 - [The pipeline](#the-pipeline)
 - [Recording and playback](#recording-and-playback)
+- [Video thumbnails](#video-thumbnails)
 - [Filtering out noise and phantom lines](#filtering-out-noise-and-phantom-lines)
 - [Reconnecting](#reconnecting)
 - [Live updates in the browser](#live-updates-in-the-browser)
@@ -40,6 +41,19 @@ Both outputs come from the same ffmpeg process with timestamps rebuilt from the 
 
 To play a clip, the browser asks for `/api/streams/<id>/audio?rec=…&start=…&end=…`. The server finds the minute files that cover that range and has ffmpeg cut and join them into one MP3. Clips are limited to 15 minutes.
 
+## Video thumbnails
+
+When a stream starts, the worker runs `ffprobe` on it once to see whether it has a video track. The same check files a new stream under **Video** or **Audio** in the sidebar if no group was chosen. If it does, and **Video thumbnails** is on, ffmpeg gets a third output:
+
+```
+-skip_frame:v nokey   (input)   decode keyframes only, so this costs almost no CPU
+-map 0:v:0 -vf setpts=PTS-STARTPTS,fps=1/5:round=up,scale=-2:144  →  thumbs/%06d.jpg
+```
+
+`thumbs/000000.jpg` is the start of the take and file *n* is *n* × 5 seconds in. `round=up` makes each picture the last keyframe at or before its moment, so it is never ahead of the audio; with typical 1–2 second keyframe spacing it is within a second or two. The take's `thumb_seconds` column records the interval (0 for audio-only takes).
+
+The player asks `/api/streams/<id>/thumbs` which pictures exist for the clip, then lays out enough of them to fill the filmstrip. Thumbnails are pruned along with the audio.
+
 ## Filtering out noise and phantom lines
 
 Whisper tends to invent text when given music or silence. Three layers stop that reaching the transcript:
@@ -64,7 +78,8 @@ The browser holds one Server-Sent Events connection to `/api/events`. The server
 |---|---|
 | `segment` | A new transcript line |
 | `status` | A stream's state or counters changed |
-| `order` | Someone reordered the stream list |
+| `order` | Someone reordered or regrouped the stream list |
+| `category` | A stream moved group, or was filed automatically after the video check |
 | `deleted` | A stream was deleted |
 
 A comment ping is sent every 15 seconds so proxies keep the connection open, and the browser reconnects after 3 seconds if it drops.
@@ -76,9 +91,9 @@ SQLite in WAL mode, at `/data/transcriber.db`. Missing columns are added on star
 | Table | Holds |
 |---|---|
 | `users` | `username` (case-insensitive, unique), scrypt `pw_hash`, `is_admin`, `created` |
-| `streams` | `name`, `url`, `language`, `enabled`, `created_by`, `created`, `position` (list order) |
+| `streams` | `name`, `url`, `language`, `enabled`, `created_by`, `created`, `position` (list order), `category` (`video`, `audio`, or blank until the first check) |
 | `segments` | One transcript line: `stream_id`, `ts` (unix time), `duration`, `text`, `rec_id`, `rec_offset` (seconds into the recording) |
-| `recordings` | One take: `stream_id`, `started`, `length`, `seg_seconds` |
+| `recordings` | One take: `stream_id`, `started`, `length`, `seg_seconds`, `thumb_seconds` (0 = no video thumbnails) |
 | `settings` | Key/value pairs; see [Administration](administration.md#settings) |
 | `logs` | Activity log: `ts`, `level`, `stream_id`, `message` (kept 14 days) |
 
@@ -115,14 +130,16 @@ The web pages use a small JSON API. It's documented here for scripting and troub
 | Method & path | Auth | Body / query | Notes |
 |---|---|---|---|
 | `GET /api/streams` | user | | All streams in list order, with live status |
-| `POST /api/streams` | user | `{name, url, language?}` | Adds and starts a stream |
+| `POST /api/streams` | user | `{name, url, language?, category?}` | Adds and starts a stream. `category` is `video`, `audio`, or blank to decide automatically |
 | `GET /api/streams/{id}` | user | | One stream |
-| `PATCH /api/streams/{id}` | user | `{name?, url?, language?, enabled?, restart?}` | Restarts if URL or language changed, or `restart` is true |
+| `PATCH /api/streams/{id}` | user | `{name?, url?, language?, category?, enabled?, restart?}` | Restarts if URL or language changed, or `restart` is true |
 | `DELETE /api/streams/{id}` | user | | Deletes it with its transcript and audio |
-| `PUT /api/streams/order` | user | `{ids: [3, 1, 2]}` | Saves the list order, top to bottom |
+| `PUT /api/streams/order` | user | `{ids: [3, 1, 2], categories?: {"3": "video"}}` | Saves the list order, top to bottom, and moves streams between the Video and Audio groups |
 | `GET /api/streams/{id}/segments` | user | `limit` (≤ 500), `before`, `after`, `at`, `q` | Latest lines by default. `before`/`after` page by line id; `at` (unix time) returns lines around that moment plus the recording covering it; `q` filters by text |
 | `GET /api/streams/{id}/export` | user | `format=txt\|srt`, `hours` (default 24) | Transcript download |
 | `GET /api/streams/{id}/audio` | user | `rec`, `start`, `end` (seconds into the recording) | MP3 clip, up to 15 minutes |
+| `GET /api/streams/{id}/thumbs` | user | `rec`, `start`, `end` | `{interval, n: [...]}`: which video thumbnails exist in that range (`interval` 0 = no video) |
+| `GET /api/streams/{id}/thumbs/{rec}/{n}.jpg` | user | | One thumbnail, *n* × `interval` seconds into the recording |
 | `GET /api/events` | user | | Server-Sent Events stream |
 
 ### Admin
