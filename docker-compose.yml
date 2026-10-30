@@ -1,10 +1,10 @@
 services:
-  stream-transcriber:
-    # Published by the GitHub Action — swap in your GitHub username.
+  transcriber-2000:
+    # Docker Hub image. Also published as ghcr.io/haftwo/transcriber-2000:latest by GitHub Actions.
     # (Or comment out "image" and uncomment "build" to build locally instead.)
-    image: ghcr.io/YOUR-GITHUB-USERNAME/stream-transcriber:latest
+    image: haftwo/transcriber-2000:latest
     # build: .
-    container_name: stream-transcriber
+    container_name: transcriber-2000
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -16,4 +16,5 @@ services:
       # Set to 1 when the site is only reached over HTTPS (e.g. via Cloudflare Tunnel).
       - COOKIE_SECURE=0
     volumes:
-      - /mnt/user/appdata/stream-transcriber:/data
+      # Keep this line: it is what makes settings, users and recordings survive updates.
+      - /mnt/user/appdata/transcriber-2000:/data

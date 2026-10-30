@@ -3,14 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · Transcriber</title>
+<title>Sign in · Audio Transcriber - 2000</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#1e6184">
 </head>
 <body>
 <main class="auth-page">
   <form class="auth-card" id="form" novalidate>
-    <div class="brand"><span class="brand-mark"><span class="brand-bars"><span style="height:6px"></span><span style="height:14px"></span><span style="height:9px"></span></span></span>Transcriber</div>
+    <div class="brand"><img class="brand-mark" src="/static/favicon.svg" alt="">Audio Transcriber - 2000</div>
     <h1 id="title">Welcome back</h1>
     <p class="lede" id="lede">Sign in to see your live transcripts.</p>
     <div class="error-msg" id="err" hidden></div>
@@ -19,9 +24,11 @@
     <label class="field" id="confirm-wrap" hidden><span>Confirm password</span><input type="password" name="confirm" autocomplete="new-password"></label>
     <button class="btn primary" id="submit">Sign in</button>
   </form>
+  <div class="auth-theme" id="auth-theme"></div>
 </main>
 <script src="/static/common.js"></script>
 <script>
+mountThemePicker(document.getElementById("auth-theme"));
 let setupMode = false;
 const f = document.getElementById("form"), err = document.getElementById("err");
 

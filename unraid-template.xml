@@ -1,17 +1,19 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>stream-transcriber</Name>
-  <Repository>ghcr.io/YOUR-GITHUB-USERNAME/stream-transcriber:latest</Repository>
-  <Registry>https://github.com/YOUR-GITHUB-USERNAME/stream-transcriber/pkgs/container/stream-transcriber</Registry>
+  <Name>transcriber-2000</Name>
+  <Repository>haftwo/transcriber-2000:latest</Repository>
+  <Registry>https://hub.docker.com/r/haftwo/transcriber-2000</Registry>
+  <Project>https://github.com/haftwo/transcriber-2000</Project>
+  <Support>https://github.com/haftwo/transcriber-2000/issues</Support>
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Overview>Live transcription of internet audio streams (HLS / Icecast) using a whisper-asr-webservice container. Sign-in protected web UI with an admin page.</Overview>
+  <Overview>Audio Transcriber - 2000 — live transcription of internet audio streams (HLS / Icecast) using a whisper-asr-webservice container. Sign-in protected web UI with an admin page.</Overview>
   <Category>MediaServer:Other Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f399.png</Icon>
+  <Icon>https://raw.githubusercontent.com/haftwo/transcriber-2000/main/app/static/icon-512.png</Icon>
   <Config Name="Web UI port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
-  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/stream-transcriber" Mode="rw" Description="Database, settings and session key" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/stream-transcriber</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/transcriber-2000" Mode="rw" Description="REQUIRED so settings, users, streams, transcripts and recordings survive updates. Keep this the same every time you update." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/transcriber-2000</Config>
   <Config Name="Whisper URL" Target="WHISPER_URL" Default="http://192.168.1.10:9000" Mode="" Description="Starting value only — change later in Admin &gt; Settings" Type="Variable" Display="always" Required="false" Mask="false">http://192.168.1.10:9000</Config>
   <Config Name="Time zone" Target="TZ" Default="Australia/Melbourne" Mode="" Description="Used for timestamps in downloaded transcripts" Type="Variable" Display="advanced" Required="false" Mask="false">Australia/Melbourne</Config>
   <Config Name="Secure cookies" Target="COOKIE_SECURE" Default="0" Mode="" Description="Set to 1 if you only reach the site over HTTPS (e.g. Cloudflare Tunnel)" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>

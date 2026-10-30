@@ -2,7 +2,8 @@
 
 Each enabled stream gets two asyncio tasks:
   * reader      — runs ffmpeg against the HLS URL, decodes to 16 kHz mono PCM and
-                  cuts it into fixed-length chunks.
+                  cuts it into fixed-length chunks. The same ffmpeg also writes an MP3
+                  recording in fixed-length files, so every line can be played back.
   * transcriber — sends each chunk (as WAV) to whisper-asr-webservice and stores the text.
 
 A bounded queue sits between them so a slow Whisper never stalls the network read.
@@ -14,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.parse
@@ -21,7 +23,10 @@ import urllib.request
 import uuid
 import wave
 
+from .db import rec_dir
+
 SAMPLE_RATE = 16000
+REC_SEG_SECONDS = 60  # length of each recorded MP3 file
 BYTES_PER_SEC = SAMPLE_RATE * 2  # s16le mono
 
 # Whisper's favourite phantom lines on music / silence.
@@ -140,6 +145,8 @@ class StreamWorker:
         self.tasks = []
         self.stopping = False
         self.last_text = ""
+        self.rec = None        # current recording row (dict) while audio flows
+        self.rec_bytes = 0     # PCM bytes received in the current recording
 
     # lifecycle -------------------------------------------------------------
     def start(self):
@@ -175,18 +182,55 @@ class StreamWorker:
                 "last_text_at": self.last_text_at}
 
     # reader ----------------------------------------------------------------
-    def _ffmpeg_cmd(self):
-        return [
+    def _ffmpeg_cmd(self, rec_folder=None):
+        # asetpts=N/SR/TB numbers the audio by sample count, so a gap in the source
+        # can't push the recording and the transcript out of step with each other.
+        cmd = [
             "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
             # network only — never let a stream URL read local files
             "-protocol_whitelist", "http,https,tcp,tls,crypto,hls,httpproxy",
-            "-user_agent", "Mozilla/5.0 (StreamTranscriber)",
+            "-user_agent", "Mozilla/5.0 (Transcriber2000)",
             "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10",
             "-rw_timeout", "20000000",
             "-i", self.url,
-            "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",
+            "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-af", "asetpts=N/SR/TB",
+            "-f", "s16le", "pipe:1",
         ]
+        if rec_folder:
+            kbps = min(max(self.m.db.setting("audio_bitrate", int), 32), 320)
+            cmd += [
+                "-vn", "-af", "asetpts=N/SR/TB", "-c:a", "libmp3lame", "-b:a", f"{kbps}k",
+                "-ar", "44100", "-f", "segment", "-segment_time", str(REC_SEG_SECONDS),
+                "-segment_format", "mp3",
+                "-segment_format_options", "id3v2_version=0:write_xing=0",
+                "-reset_timestamps", "1", os.path.join(rec_folder, "%06d.mp3"),
+            ]
+        return cmd
+
+    # recording -------------------------------------------------------------
+    def _rec_begin(self):
+        """Create the row and folder for a new take (before ffmpeg starts)."""
+        if not self.m.db.setting("record_audio", int):
+            return None
+        rid = self.m.db.x("INSERT INTO recordings(stream_id, started, length, seg_seconds) VALUES (?, ?, 0, ?)",
+                          (self.id, time.time(), REC_SEG_SECONDS))
+        self.rec = self.m.db.one("SELECT * FROM recordings WHERE id=?", (rid,))
+        self.rec_bytes = 0
+        folder = rec_dir(self.rec)
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    def _rec_end(self, got_audio):
+        if not self.rec:
+            return
+        if got_audio:
+            self.m.db.x("UPDATE recordings SET length=? WHERE id=?",
+                        (self.rec_bytes / BYTES_PER_SEC, self.rec["id"]))
+        else:  # never connected — nothing worth keeping
+            self.m.db.x("DELETE FROM recordings WHERE id=?", (self.rec["id"],))
+            shutil.rmtree(rec_dir(self.rec), ignore_errors=True)
+        self.rec = None
 
     async def _reader(self):
         backoff = 5
@@ -198,9 +242,12 @@ class StreamWorker:
             first_attempt = False
             stderr_tail = []
             got_audio = False
+            take_start = time.time()   # wall-clock time of the first sample in this take
+            pos = 0                     # PCM bytes received in this take
             try:
+                folder = self._rec_begin()
                 self.proc = await asyncio.create_subprocess_exec(
-                    *self._ffmpeg_cmd(), stdout=asyncio.subprocess.PIPE,
+                    *self._ffmpeg_cmd(folder), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE)
                 err_task = asyncio.create_task(self._drain_stderr(stderr_tail))
                 chunk_secs = self.m.db.setting("chunk_seconds", int)
@@ -215,28 +262,38 @@ class StreamWorker:
                         break
                     if not data:  # ffmpeg exited
                         if len(buf) >= BYTES_PER_SEC * 2:
-                            await self._enqueue(bytes(buf))
+                            await self._enqueue(bytes(buf), take_start, pos - len(buf))
                         break
                     if not got_audio:
                         got_audio = True
                         backoff = 5
+                        take_start = time.time()
+                        if self.rec:
+                            self.m.db.x("UPDATE recordings SET started=? WHERE id=?", (take_start, self.rec["id"]))
+                            self.rec["started"] = take_start
                         self._set("live", "")
-                        self.m.db.log("info", "Receiving audio", self.id)
+                        self.m.db.log("info", "Receiving audio" + (" (recording)" if self.rec else ""), self.id)
                     buf += data
+                    pos += len(data)
+                    self.rec_bytes = pos
                     while len(buf) >= size:
-                        await self._enqueue(bytes(buf[:size]))
+                        await self._enqueue(bytes(buf[:size]), take_start, pos - len(buf))
                         del buf[:size]
                 self._kill()
                 await self.proc.wait()
                 err_task.cancel()
+                self._rec_end(got_audio)
             except asyncio.CancelledError:
                 self._kill()
+                self._rec_end(got_audio)
                 raise
             except FileNotFoundError:
+                self._rec_end(False)
                 self._set("error", "ffmpeg is not installed in the container")
                 return
             except Exception as e:  # keep the loop alive whatever happens
                 stderr_tail.append(str(e))
+                self._rec_end(got_audio)
 
             if self.stopping:
                 return
@@ -253,17 +310,21 @@ class StreamWorker:
                 tail.append(s)
                 del tail[:-5]
 
-    async def _enqueue(self, pcm):
-        ended = time.time()
+    async def _enqueue(self, pcm, take_start, byte_pos):
+        offset = byte_pos / BYTES_PER_SEC   # seconds into this take
+        rec_id = None
+        if self.rec:
+            rec_id = self.rec["id"]
+            self.m.db.x("UPDATE recordings SET length=? WHERE id=?", (self.rec_bytes / BYTES_PER_SEC, rec_id))
         if self.queue.full():
             self.queue.get_nowait()
             self.m.db.log("warning", "Whisper is falling behind; dropped an audio chunk", self.id)
-        await self.queue.put((ended - len(pcm) / BYTES_PER_SEC, pcm))
+        await self.queue.put((take_start + offset, rec_id, offset, pcm))
 
     # transcriber -----------------------------------------------------------
     async def _transcriber(self):
         while True:
-            started, pcm = await self.queue.get()
+            started, rec_id, rec_offset, pcm = await self.queue.get()
             self.chunks += 1
             db = self.m.db
             if pcm_rms(pcm) < db.setting("silence_threshold", float):
@@ -292,10 +353,12 @@ class StreamWorker:
             self.last_text = text
             self.last_text_at = time.time()
             duration = len(pcm) / BYTES_PER_SEC
-            seg_id = db.x("INSERT INTO segments(stream_id, ts, duration, text) VALUES (?, ?, ?, ?)",
-                          (self.id, started, duration, text))
+            seg_id = db.x("INSERT INTO segments(stream_id, ts, duration, text, rec_id, rec_offset) "
+                          "VALUES (?, ?, ?, ?, ?, ?)",
+                          (self.id, started, duration, text, rec_id, rec_offset))
             self.m.broker.publish({"type": "segment", "stream_id": self.id, "id": seg_id,
-                                   "ts": started, "duration": duration, "text": text})
+                                   "ts": started, "duration": duration, "text": text,
+                                   "rec_id": rec_id, "rec_offset": rec_offset})
             self.m.broker.publish({"type": "status", **self.info()})
 
 
@@ -337,6 +400,13 @@ class Manager:
         for sid in list(self.workers):
             await self.stop(sid)
 
+    def live_length(self, rec_id):
+        """Seconds recorded so far for a take that is still running, else None."""
+        for w in self.workers.values():
+            if w.rec and w.rec["id"] == rec_id:
+                return w.rec_bytes / BYTES_PER_SEC
+        return None
+
     def info(self, stream_id):
         w = self.workers.get(stream_id)
         if w:
@@ -347,7 +417,9 @@ class Manager:
     async def _housekeeping(self):
         while True:
             try:
-                self.db.prune(self.db.setting("retention_days", int))
+                active = [w.rec["id"] for w in self.workers.values() if w.rec]
+                await asyncio.to_thread(self.db.prune, self.db.setting("retention_days", int),
+                                        self.db.setting("audio_retention_days", int), active)
             except Exception as e:
                 print("prune failed:", e, flush=True)
             await asyncio.sleep(3600)

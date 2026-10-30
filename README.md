@@ -1,119 +1,75 @@
-# Stream Transcriber
+<p align="center">
+  <img src="app/static/icon-192.png" width="96" height="96" alt="Audio Transcriber - 2000 icon">
+</p>
 
-A small self-hosted web app that listens to live internet audio streams (HLS `.m3u8`, Icecast/Shoutcast, most HTTP audio) and shows a live, searchable transcript using your existing **whisper-asr-webservice** container.
+<h1 align="center">Audio Transcriber - 2000</h1>
 
-- Sign-in page (first visit creates the admin account)
-- Streams page: add/edit/stop streams, live transcript that scrolls as people speak, search, "Listen" to play along, download as `.txt` or `.srt`
-- Admin page: users, Whisper settings (with a connection test), stream health, activity log
-- Everything stored in one SQLite file in `/data`
+<p align="center">
+  Live, searchable transcripts of internet radio and audio streams, using your own Whisper server.<br>
+  Self-hosted in one Docker container. Built for Unraid, runs anywhere Docker does.
+</p>
 
-## How it works
+---
 
-```
-HLS stream ──► ffmpeg (16 kHz mono) ──► 15 s chunks ──► whisper-asr-webservice /asr ──► SQLite ──► browser (live via SSE)
-```
+Point it at a live stream (HLS `.m3u8`, Icecast/Shoutcast, most HTTP audio) and it writes down what's said as it's said. Every stream is recorded, so you can click any line to hear that moment again or download it as an MP3.
 
-Each stream runs its own ffmpeg process. Audio is cut into fixed chunks (default 15 s); near-silent chunks are skipped and Whisper's common phantom lines on music ("Thank you.", "[Music]") are dropped. The previous line is passed as `initial_prompt` so sentences carry across chunk boundaries. If a stream drops, it reconnects automatically with back-off.
+Transcription is done by a [whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice) container you run yourself. No audio leaves your network.
 
-## Install on Unraid
+## Features
 
-The image is built by GitHub and published to GitHub Container Registry, so Unraid just pulls it.
+- **Live transcripts** that scroll as people speak, with search and download as `.txt` or `.srt`
+- **Play any line back** in a waveform player, widen the clip, and save it as an MP3
+- **Many streams at once**, each with its own language, in an order you drag into place
+- **Sign-in protected**, with an admin page for users, Whisper settings, stream health and an activity log
+- **Light, dark or automatic theme**, remembered per browser
+- **Recovers on its own**: dropped streams reconnect, and settings survive container updates
+- **No build step**: Python on the server, plain HTML/CSS/JS in the browser
 
-### 1. Publish the image (one-off)
+## Quick start
 
-1. Create a new repo on GitHub called `stream-transcriber`. Public is simplest: the image is then public too and Unraid can pull it without a login.
-2. Push this folder to it:
-   ```bash
-   cd stream-transcriber
-   git remote add origin https://github.com/YOUR-GITHUB-USERNAME/stream-transcriber.git
-   git push -u origin main
-   ```
-3. Watch the **Actions** tab. After about 2–3 minutes the image is at
-   `ghcr.io/YOUR-GITHUB-USERNAME/stream-transcriber:latest`.
-4. **Private repo?** The package will be private too. Either make the package public (your GitHub profile → Packages → stream-transcriber → Package settings → Change visibility), or log Unraid in once from its terminal with a GitHub token that has `read:packages`:
-   `docker login ghcr.io -u YOUR-GITHUB-USERNAME`
+You need Docker and a running whisper-asr-webservice container (port 9000 by default).
 
-Every later `git push` to `main` rebuilds `:latest`. On Unraid, use **Check for Updates** → **Apply Update** to pull it.
-
-### 2. Run it on Unraid
-
-**Template (recommended):** edit `unraid-template.xml` and replace `YOUR-GITHUB-USERNAME`. Then, from the Unraid terminal:
 ```bash
-nano /boot/config/plugins/dockerMan/templates-user/my-stream-transcriber.xml   # paste the template
-```
-Go to the Docker tab → *Add Container* → choose **stream-transcriber** → set *Whisper URL* → *Apply*.
-
-**Or, without a template:** Docker tab → *Add Container*, then set:
-- Repository `ghcr.io/YOUR-GITHUB-USERNAME/stream-transcriber:latest`
-- Port 8080 → 8080
-- Path `/data` → `/mnt/user/appdata/stream-transcriber`
-- Variable `WHISPER_URL` = `http://<unraid-ip>:9000`
-
-**Compose Manager plugin:** use `docker-compose.yml`, with your username filled in.
-
-Then open `http://<unraid-ip>:8080` and create your admin account.
-
-### Alternative: Docker Hub instead of GitHub
-
-From the Unraid terminal, inside this folder:
-```bash
-docker login                     # Docker Hub username + access token
-docker build -t YOUR-DOCKERHUB-USER/stream-transcriber:latest .
-docker push YOUR-DOCKERHUB-USER/stream-transcriber:latest
+docker run -d --name transcriber-2000 \
+  -p 8080:8080 \
+  -v /mnt/user/appdata/transcriber-2000:/data \
+  -e WHISPER_URL=http://192.168.1.10:9000 \
+  -e TZ=Australia/Melbourne \
+  --restart unless-stopped \
+  haftwo/transcriber-2000:latest
 ```
 
-### Whisper container settings that work well
+Open `http://<server-ip>:8080`. The first visit asks you to create the admin account. Then click **Add** and paste a stream URL.
 
-- `ASR_ENGINE=faster_whisper` — much faster than `openai_whisper`, and needed for the voice-activity filter.
-- `ASR_MODEL=small` or `medium` for one or two streams on a GPU; `large-v3` if the GPU keeps up (watch **Backlog** on the Admin page — if it climbs, Whisper is too slow for the number of streams).
-- Use the `latest-gpu` image with the NVIDIA runtime so your GPU does the work.
+> **Keep the `/data` mapping.** It holds your settings, users, streams, transcripts and recordings. Without it, they are lost on the next update.
 
-## Putting it on the internet (Cloudflare Tunnel)
+Unraid users: see [Installation → Unraid](docs/installation.md#unraid) for the template.
 
-Add a public hostname in your tunnel pointing at `http://<unraid-ip>:8080`, then set `COOKIE_SECURE=1` on the container so the sign-in cookie is only sent over HTTPS. Repeated wrong passwords from one IP are blocked for 10 minutes. Consider adding Cloudflare Access in front for a second layer.
+## Documentation
 
-## Finding a stream URL
-
-Open the station's web player, open browser dev tools → **Network**, filter for `m3u8`, press play, and copy the URL of the playlist (`…/master.m3u8` or `…/playlist.m3u8`). Some stations use signed URLs that expire; if a stream errors after a few hours, grab a fresh URL. "Listen" in the browser may not work for stations that block cross-site playback — transcription still works because the server fetches the audio itself.
-
-## Settings (Admin → Settings)
-
-| Setting | Default | Notes |
-|---|---|---|
-| Whisper URL | from `WHISPER_URL` | Test button checks it's reachable |
-| Chunk length | 15 s | Shorter = less delay, longer = more accurate |
-| Default language | `en` | Blank = auto-detect. Each stream can override |
-| Silence threshold | 120 | RMS level below which a chunk is skipped |
-| Simultaneous Whisper requests | 2 | Across all streams |
-| Keep transcripts | 30 days | 0 = forever |
-
-## Environment variables
-
-| Variable | Purpose |
+| Guide | What's in it |
 |---|---|
-| `WHISPER_URL` | Initial Whisper address (afterwards edit in Admin) |
-| `TZ` | Time zone for downloaded transcripts |
-| `COOKIE_SECURE` | `1` when served only over HTTPS |
-| `SECRET_KEY` | Optional; otherwise a key is generated and kept in `/data/secret.key` |
-| `DATA_DIR` | Defaults to `/data` |
+| [Installation](docs/installation.md) | Unraid, Docker Compose, plain Docker, Whisper settings, remote access, updating |
+| [Using the app](docs/user-guide.md) | Adding streams, reading and searching transcripts, playback, downloads, themes |
+| [Administration](docs/administration.md) | Users, every setting, environment variables, storage, backups |
+| [How it works](docs/how-it-works.md) | The audio pipeline, data model and HTTP API |
+| [Development](docs/development.md) | Running locally, project layout, building and releasing images |
+| [Troubleshooting](docs/troubleshooting.md) | Common problems and fixes |
+| [Changelog](CHANGELOG.md) | What changed in each release |
 
-## Forgot the admin password?
-
-Stop the container and delete `/mnt/user/appdata/stream-transcriber/transcriber.db` to start fresh (this also removes streams and transcripts), or ask another admin to reset it from Admin → Users.
-
-## Running locally for development
-
-```bash
-pip install -r requirements.txt
-DATA_DIR=./data WHISPER_URL=http://192.168.1.10:9000 uvicorn app.main:app --reload --port 8080
-```
-
-## Files
+## How it works, in one line
 
 ```
-app/main.py        routes, auth, admin API
-app/worker.py      ffmpeg ingest, chunking, Whisper calls, live event fan-out
-app/db.py          SQLite schema and settings
-app/auth.py        password hashing (scrypt) and login rate limit
-app/static/        login, streams and admin pages (plain HTML/CSS/JS, no build step)
+stream ──► ffmpeg (16 kHz mono + MP3 recording) ──► 15 s chunks ──► Whisper /asr ──► SQLite ──► browser (live)
 ```
+
+More in [How it works](docs/how-it-works.md).
+
+## Images
+
+| Registry | Image | Built by |
+|---|---|---|
+| Docker Hub | `haftwo/transcriber-2000:latest` | `push-to-dockerhub.command` on a Mac |
+| GitHub Container Registry | `ghcr.io/haftwo/transcriber-2000:latest` | GitHub Actions, on every push to `main` |
+
+Both are `linux/amd64`.

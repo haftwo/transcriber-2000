@@ -3,9 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Transcriber</title>
+<title>Audio Transcriber - 2000</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#1e6184">
 </head>
 <body>
 <header class="topbar"></header>
@@ -66,6 +71,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
           <input type="search" id="q" placeholder="Search this transcript" autocomplete="off">
         </label>
+        <button class="btn" id="btn-goto" onclick="openGotoDialog()" title="Jump to a date and time">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M12 14v2.5l1.5 1"/></svg>
+          <span>Go to time</span></button>
         <div class="player" id="player" hidden><audio id="audio" controls></audio></div>
       </div>
 
@@ -73,9 +81,56 @@
         <div class="transcript" id="transcript"></div>
         <button class="btn primary sm jump-live" id="jump" hidden onclick="scrollToLive()">↓ Back to live</button>
       </div>
+
+      <!-- recorded-audio player: opens when a transcript line is clicked -->
+      <div class="clipbar" id="clipbar" hidden>
+        <button class="btn clip-more" id="clip-earlier" title="Add 30 seconds before">« Earlier</button>
+        <div class="clip-main">
+          <div class="wave-box" id="wave-box" title="Click to jump to that point">
+            <canvas id="wave"></canvas>
+            <div class="clip-loading" id="clip-loading">Loading audio…</div>
+            <button class="clip-btn clip-play" id="clip-play" aria-label="Play">
+              <svg class="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 7 5.5Z"/></svg>
+              <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+            </button>
+            <div class="clip-actions">
+              <span class="clip-time" id="clip-time"></span>
+              <button class="clip-btn clip-dl" id="clip-dl" title="Download this audio as MP3 (the line plus 30 seconds either side, and anything added with Earlier/Later)">Download
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg></button>
+              <button class="clip-btn clip-close" id="clip-close" aria-label="Close player" title="Close (Esc)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div>
+          </div>
+          <div class="ticks" id="ticks"></div>
+        </div>
+        <button class="btn clip-more" id="clip-later" title="Add 30 seconds after">Later »</button>
+        <audio id="clip-audio" preload="auto"></audio>
+      </div>
     </section>
   </main>
 </div>
+
+<dialog id="goto-dialog">
+  <form method="dialog" id="goto-form">
+    <h3>Go to a date and time</h3>
+    <p class="lede">Shows the transcript from that moment and opens the recording there.</p>
+    <div class="error-msg" hidden></div>
+    <div class="grid-2">
+      <label class="field"><span>Date</span><input type="date" name="date" required></label>
+      <label class="field"><span>Time</span><input type="time" name="time" step="1" required></label>
+    </div>
+    <div class="quick-times">
+      <button type="button" class="btn sm" data-ago="300">5 min ago</button>
+      <button type="button" class="btn sm" data-ago="900">15 min ago</button>
+      <button type="button" class="btn sm" data-ago="3600">1 hour ago</button>
+      <button type="button" class="btn sm" data-ago="86400">Yesterday, this time</button>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Go</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="stream-dialog">
   <form method="dialog" id="stream-form">

@@ -22,12 +22,15 @@ const fmtDateTime = ts => new Date(ts * 1000).toLocaleString([], { day: "numeric
 // ---------------------------------------------------------------- overview
 async function loadOverview() {
   const [stats, streams] = await Promise.all([api("GET", "/api/admin/stats"), api("GET", "/api/streams")]);
+  $("storage-warning").hidden = stats.storage_ok;
+  $("storage-warning").innerHTML = `<b>Settings won't survive an update.</b> ${esc(stats.storage_warning)}`;
   $("stats").innerHTML = [
     [stats.running + " / " + stats.streams, "Streams running"],
     [stats.segments_24h.toLocaleString(), "Lines in last 24h"],
     [stats.segments.toLocaleString(), "Lines stored"],
     [stats.users, stats.users === 1 ? "User" : "Users"],
     [stats.db_mb + " MB", "Database size"],
+    [stats.audio_gb + " GB", "Recorded audio"],
   ].map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join("");
   $("stream-rows").innerHTML = streams.length ? streams.map(s => {
     const st = s.enabled ? s.status : "stopped";
@@ -92,8 +95,12 @@ async function deleteUser(id, name) {
 }
 
 // ---------------------------------------------------------------- settings
+let savedAudioDays = null;
+
 async function loadSettings() {
   const s = await api("GET", "/api/admin/settings");
+  savedAudioDays = Number(s.audio_retention_days);
+  showAudioUsage();
   const f = $("settings-form");
   for (const [k, v] of Object.entries(s)) {
     const el = f.elements[k];
@@ -109,9 +116,37 @@ $("settings-form").addEventListener("submit", async e => {
     if (!el.name) continue;
     out[el.name] = el.type === "checkbox" ? (el.checked ? 1 : 0) : el.value;
   }
-  try { await api("PUT", "/api/admin/settings", out); toast("Settings saved"); loadSettings(); }
-  catch (ex) { toast(ex.message, true); }
+  const newDays = Number(out.audio_retention_days);
+  const shorter = newDays > 0 && (savedAudioDays === 0 || newDays < savedAudioDays);
+  if (shorter && !confirm(`Recordings older than ${newDays} day${newDays === 1 ? "" : "s"} will be deleted now. This can't be undone. Continue?`)) return;
+  try {
+    await api("PUT", "/api/admin/settings", out);
+    toast("Settings saved");
+    if (shorter) await pruneAudio(true);
+    loadSettings();
+  } catch (ex) { toast(ex.message, true); }
 });
+
+async function pruneAudio(confirmed) {
+  const days = Number($("settings-form").audio_retention_days.value);
+  if (!confirmed) {
+    if (days !== savedAudioDays) return toast("Save your settings first, then delete", true);
+    if (days <= 0) return toast("Recordings are set to be kept forever — set a number of days first", true);
+    if (!confirm(`Delete all recorded audio older than ${days} day${days === 1 ? "" : "s"}? This can't be undone.`)) return;
+  }
+  try {
+    const r = await api("POST", "/api/admin/prune-audio");
+    toast(r.message);
+    showAudioUsage();
+  } catch (ex) { toast(ex.message, true); }
+}
+
+async function showAudioUsage() {
+  try {
+    const st = await api("GET", "/api/admin/stats");
+    $("audio-usage").textContent = `Recordings currently use ${st.audio_gb} GB.`;
+  } catch { /* not important */ }
+}
 
 async function testWhisper() {
   const el = $("test-result");

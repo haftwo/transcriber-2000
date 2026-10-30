@@ -3,9 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Admin · Transcriber</title>
+<title>Admin · Audio Transcriber - 2000</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#1e6184">
 </head>
 <body>
 <header class="topbar"></header>
@@ -13,6 +18,7 @@
 <main class="admin">
   <h1>Admin</h1>
   <p class="lede">Manage who can sign in, how audio is sent to Whisper, and see what the server is doing.</p>
+  <div class="storage-warning" id="storage-warning" hidden></div>
 
   <nav class="tabs">
     <button class="tab active" data-tab="overview">Overview</button>
@@ -77,9 +83,29 @@
       </div>
 
       <div class="card">
+        <h2>Recording</h2>
+        <p class="lede">Streams are recorded as MP3 so you can click any line to hear it. Changes apply when a stream restarts.</p>
+        <label class="check"><input type="checkbox" name="record_audio">
+          <span>Record stream audio<small>Roughly 0.75 GB per stream per day at 64 kbps, 1 GB at 96 kbps.</small></span></label>
+        <div class="grid-2">
+          <label class="field"><span>Recording quality (kbps)</span>
+            <select name="audio_bitrate">
+              <option value="48">48 — speech only</option><option value="64">64</option>
+              <option value="96">96 — good for speech and music</option><option value="128">128</option><option value="192">192</option>
+            </select></label>
+          <label class="field"><span>Keep recordings for (days)</span><input type="number" name="audio_retention_days" min="0" max="3650">
+            <small>Audio older than this is deleted — straight away when you save a shorter time, then hourly. 0 keeps everything forever.</small></label>
+        </div>
+        <div class="inline-row" style="align-items:center;flex-wrap:wrap">
+          <button type="button" class="btn" onclick="pruneAudio()">Delete old audio now</button>
+          <span class="muted" id="audio-usage" style="font-size:13.5px"></span>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Storage</h2>
         <label class="field" style="max-width:320px"><span>Keep transcripts for (days)</span><input type="number" name="retention_days" min="0" max="3650">
-          <small>0 keeps everything forever.</small></label>
+          <small>0 keeps everything forever. Lines stay after their audio is deleted.</small></label>
       </div>
       <button class="btn primary">Save settings</button>
     </form>

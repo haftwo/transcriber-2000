@@ -1,4 +1,4 @@
-"""Stream Transcriber — web app entry point (Starlette + Uvicorn)."""
+"""Audio Transcriber - 2000 — web app entry point (Starlette + Uvicorn)."""
 import asyncio
 import contextlib
 import json
@@ -18,13 +18,14 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .auth import RateLimiter, hash_password, load_secret, verify_password
-from .db import DATA_DIR, DB, DEFAULT_SETTINGS
+from .db import AUDIO_DIR, DATA_DIR, DB, DEFAULT_SETTINGS, data_storage_status, rec_dir
 from .worker import Manager, pcm_to_wav, whisper_request
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 db = DB()
 manager = Manager(db)
 limiter = RateLimiter()
+STORAGE = data_storage_status()
 
 
 # helpers --------------------------------------------------------------------
@@ -179,15 +180,16 @@ async def api_change_password(request):
 async def api_streams(request):
     user = need_user(request)
     if request.method == "GET":
-        rows = db.q("SELECT * FROM streams ORDER BY name COLLATE NOCASE")
+        rows = db.q("SELECT * FROM streams ORDER BY position, id")
         return JSONResponse([stream_out(s) for s in rows])
     data = await body(request)
     name = (data.get("name") or "").strip()[:80]
     if not name:
         raise HTTPException(400, "Give the stream a name")
     url, lang = clean_url(data.get("url")), clean_lang(data.get("language"))
-    sid = db.x("INSERT INTO streams(name, url, language, enabled, created_by, created) "
-               "VALUES (?, ?, ?, 1, ?, ?)", (name, url, lang, user["username"], time.time()))
+    pos = db.one("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM streams")["p"]  # new streams go to the bottom
+    sid = db.x("INSERT INTO streams(name, url, language, enabled, created_by, created, position) "
+               "VALUES (?, ?, ?, 1, ?, ?, ?)", (name, url, lang, user["username"], time.time(), pos))
     db.log("info", f"{user['username']} added stream '{name}'", sid)
     await manager.start(sid)
     return JSONResponse(stream_out(db.one("SELECT * FROM streams WHERE id=?", (sid,))), 201)
@@ -204,6 +206,7 @@ async def api_stream(request):
     if request.method == "DELETE":
         await manager.stop(sid)
         db.x("DELETE FROM segments WHERE stream_id=?", (sid,))
+        await asyncio.to_thread(db.delete_stream_audio, sid)
         db.x("DELETE FROM streams WHERE id=?", (sid,))
         db.log("info", f"{user['username']} deleted stream '{s['name']}'")
         manager.broker.publish({"type": "deleted", "stream_id": sid})
@@ -226,6 +229,22 @@ async def api_stream(request):
     return JSONResponse(stream_out(db.one("SELECT * FROM streams WHERE id=?", (sid,))))
 
 
+async def api_stream_order(request):
+    """Save the sidebar order after a drag. Body: {"ids": [3, 1, 2, ...]} top to bottom."""
+    need_user(request)
+    data = await body(request)
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(400, "Expected a list of stream ids")
+    known = [r["id"] for r in db.q("SELECT id FROM streams ORDER BY position, id")]
+    # ids sent first (in that order), then any streams the browser didn't know about yet
+    order = [i for i in dict.fromkeys(ids) if i in set(known)] + [i for i in known if i not in set(ids)]
+    for pos, sid in enumerate(order):
+        db.x("UPDATE streams SET position=? WHERE id=?", (pos, sid))
+    manager.broker.publish({"type": "order", "ids": order})
+    return JSONResponse({"ids": order})
+
+
 async def api_segments(request):
     need_user(request)
     sid = request.path_params["sid"]
@@ -238,10 +257,98 @@ async def api_segments(request):
     if qp.get("q"):
         where.append("text LIKE ?")
         args.append("%" + qp["q"].replace("%", "").replace("_", "") + "%")
-    rows = db.q(f"SELECT id, ts, duration, text FROM segments WHERE {' AND '.join(where)} "
-                f"ORDER BY id DESC LIMIT ?", (*args, limit))
+    cols = "SELECT id, ts, duration, text, rec_id, rec_offset FROM segments WHERE "
+    if qp.get("after"):  # newer lines, oldest first (paging forward from a past moment)
+        where.append("id > ?")
+        args.append(int(qp["after"]))
+        rows = db.q(cols + " AND ".join(where) + " ORDER BY id ASC LIMIT ?", (*args, limit))
+        return JSONResponse({"segments": rows, "more": len(rows) == limit})
+    if qp.get("at"):  # lines around a moment: half before it, half from it onwards
+        try:
+            at = float(qp["at"])
+        except ValueError:
+            raise HTTPException(400, "at must be a unix time")
+        half = max(limit // 2, 1)
+        before = db.q(cols + " AND ".join(where + ["ts + duration <= ?"]) + " ORDER BY ts DESC LIMIT ?",
+                      (*args, at, half))
+        before.reverse()
+        after = db.q(cols + " AND ".join(where + ["ts + duration > ?"]) + " ORDER BY ts ASC LIMIT ?",
+                     (*args, at, half + 1))
+        newer = len(after) > half
+        rec = db.one("SELECT id, started, length FROM recordings WHERE stream_id=? AND started<=? "
+                     "ORDER BY started DESC LIMIT 1", (sid, at))
+        if rec:
+            length = manager.live_length(rec["id"])
+            length = rec["length"] if length is None else length
+            rec = {"id": rec["id"], "offset": at - rec["started"]} if at - rec["started"] < length else None
+        return JSONResponse({"segments": before + after[:half], "more": len(before) == half,
+                             "newer": newer, "recording": rec})
+    rows = db.q(cols + " AND ".join(where) + " ORDER BY id DESC LIMIT ?", (*args, limit))
     rows.reverse()
     return JSONResponse({"segments": rows, "more": len(rows) == limit})
+
+
+MAX_CLIP_SECONDS = 15 * 60
+
+
+async def api_audio(request):
+    """MP3 of part of a recording: ?rec=<recording id>&start=<s>&end=<s> (seconds into the take)."""
+    need_user(request)
+    sid = request.path_params["sid"]
+    qp = request.query_params
+    try:
+        rec_id, start, end = int(qp["rec"]), float(qp["start"]), float(qp["end"])
+    except (KeyError, ValueError):
+        raise HTTPException(400, "rec, start and end are required")
+    rec = db.one("SELECT * FROM recordings WHERE id=? AND stream_id=?", (rec_id, sid))
+    if not rec:
+        raise HTTPException(404, "There's no recording for this part of the stream")
+    live = manager.live_length(rec_id)
+    length = live if live is not None else rec["length"]
+    start = max(0.0, start)
+    end = min(length, end, start + MAX_CLIP_SECONDS)
+    if end - start < 0.5:
+        raise HTTPException(404, "That audio isn't recorded yet")
+
+    n = rec["seg_seconds"]
+    folder = rec_dir(rec)
+    first, last = int(start // n), int((end - 0.001) // n)
+    data = bytearray()
+    for i in range(first, last + 1):
+        try:
+            with open(os.path.join(folder, f"{i:06d}.mp3"), "rb") as f:
+                data += f.read()
+        except FileNotFoundError:
+            if i == first:
+                raise HTTPException(404, "That audio is no longer kept (see Admin → Settings → Recording)")
+            end = min(end, i * n)  # the newest file may not exist yet on a live take
+            break
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-f", "mp3", "-i", "pipe:0", "-ss", f"{start - first * n:.3f}", "-t", f"{end - start:.3f}",
+        "-c", "copy", "-f", "mp3", "-id3v2_version", "0", "-write_xing", "0", "pipe:1",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate(bytes(data))
+    if proc.returncode or not out:
+        db.log("error", f"Audio clip failed: {err.decode(errors='replace')[-300:]}", sid)
+        raise HTTPException(500, "Couldn't cut that audio")
+    return Response(out, media_type="audio/mpeg", headers={
+        "Cache-Control": "private, max-age=60",
+        "X-Clip-Start": f"{start:.3f}",
+        "X-Rec-Started": f"{rec['started']:.3f}",
+        "X-Rec-Length": f"{length:.3f}",
+    })
+
+
+def _dir_size(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
 
 
 def _srt_time(sec):
@@ -347,7 +454,8 @@ async def api_settings(request):
     data = await body(request)
     numeric = {"chunk_seconds": (5, 60), "silence_threshold": (0, 5000),
                "retention_days": (0, 3650), "max_concurrent": (1, 8),
-               "vad_filter": (0, 1), "use_prompt": (0, 1)}
+               "vad_filter": (0, 1), "use_prompt": (0, 1), "record_audio": (0, 1),
+               "audio_bitrate": (32, 320), "audio_retention_days": (0, 3650)}
     for key, val in data.items():
         if key not in DEFAULT_SETTINGS:
             continue
@@ -364,6 +472,23 @@ async def api_settings(request):
             val = clean_lang(val)
         db.set_setting(key, val)
     return JSONResponse(db.settings())
+
+
+async def api_prune_audio(request):
+    """Delete recordings older than the 'Keep recordings' setting right now."""
+    admin = need_admin(request)
+    days = db.setting("audio_retention_days", int)
+    if days <= 0:
+        return JSONResponse({"ok": True, "files": 0, "mb": 0,
+                             "message": "Recordings are set to be kept forever, so nothing was deleted"})
+    active = [w.rec["id"] for w in manager.workers.values() if w.rec]
+    files, freed = await asyncio.to_thread(db.prune_audio, time.time() - days * 86400, active)
+    mb = round(freed / 1e6, 1)
+    if files:
+        db.log("info", f"{admin['username']} deleted {files} audio files older than {days} days ({mb} MB)")
+    msg = (f"Deleted audio older than {days} days — {mb:,} MB freed" if files
+           else f"No audio older than {days} days to delete")
+    return JSONResponse({"ok": True, "files": files, "mb": mb, "message": msg})
 
 
 async def api_test_whisper(request):
@@ -398,6 +523,9 @@ async def api_stats(request):
         "segments_24h": db.one("SELECT COUNT(*) n FROM segments WHERE ts>?", (time.time() - 86400,))["n"],
         "users": db.one("SELECT COUNT(*) n FROM users")["n"],
         "db_mb": round(os.path.getsize(os.path.join(DATA_DIR, "transcriber.db")) / 1e6, 1),
+        "audio_gb": round(await asyncio.to_thread(_dir_size, AUDIO_DIR) / 1e9, 2),
+        "storage_ok": STORAGE[0],
+        "storage_warning": STORAGE[1],
     })
 
 
@@ -426,7 +554,9 @@ async def http_error(request, exc):
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
-    db.log("info", "Stream Transcriber starting")
+    db.log("info", "Audio Transcriber - 2000 starting")
+    if not STORAGE[0]:
+        db.log("error", STORAGE[1])
     await manager.start_all()
     yield
     await manager.stop_all()
@@ -437,6 +567,7 @@ routes = [
     Route("/login", page_login),
     Route("/admin", page_admin),
     Route("/healthz", health),
+    Route("/favicon.ico", lambda request: FileResponse(os.path.join(STATIC, "favicon.ico"), media_type="image/x-icon")),
     Route("/api/setup", api_setup_status, methods=["GET"]),
     Route("/api/setup", api_setup, methods=["POST"]),
     Route("/api/login", api_login, methods=["POST"]),
@@ -444,14 +575,17 @@ routes = [
     Route("/api/me", api_me),
     Route("/api/me/password", api_change_password, methods=["POST"]),
     Route("/api/streams", api_streams, methods=["GET", "POST"]),
+    Route("/api/streams/order", api_stream_order, methods=["PUT"]),
     Route("/api/streams/{sid:int}", api_stream, methods=["GET", "PATCH", "DELETE"]),
     Route("/api/streams/{sid:int}/segments", api_segments),
     Route("/api/streams/{sid:int}/export", api_export),
+    Route("/api/streams/{sid:int}/audio", api_audio),
     Route("/api/events", api_events),
     Route("/api/admin/users", api_users, methods=["GET", "POST"]),
     Route("/api/admin/users/{uid:int}", api_user, methods=["PATCH", "DELETE"]),
     Route("/api/admin/settings", api_settings, methods=["GET", "PUT"]),
     Route("/api/admin/test-whisper", api_test_whisper, methods=["POST"]),
+    Route("/api/admin/prune-audio", api_prune_audio, methods=["POST"]),
     Route("/api/admin/logs", api_logs),
     Route("/api/admin/stats", api_stats),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),

@@ -1,11 +1,14 @@
 """SQLite storage. One connection, guarded by a lock — plenty for a home server."""
 import os
+import re
+import shutil
 import sqlite3
 import threading
 import time
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "transcriber.db")
+AUDIO_DIR = os.path.join(DATA_DIR, "audio")
 
 DEFAULT_SETTINGS = {
     "whisper_url": os.environ.get("WHISPER_URL", "http://192.168.1.10:9000"),
@@ -16,6 +19,9 @@ DEFAULT_SETTINGS = {
     "max_concurrent": "2",          # simultaneous requests to Whisper across all streams
     "vad_filter": "1",              # ask faster-whisper to strip non-speech
     "use_prompt": "1",              # pass the previous line as initial_prompt for continuity
+    "record_audio": "1",            # keep a recording of every stream so lines can be played back
+    "audio_bitrate": "96",          # kbps, MP3
+    "audio_retention_days": "7",    # recordings older than this are deleted (0 = keep forever)
 }
 
 SCHEMA = """
@@ -33,7 +39,8 @@ CREATE TABLE IF NOT EXISTS streams (
     language TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     created_by TEXT,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS segments (
     id INTEGER PRIMARY KEY,
@@ -43,6 +50,16 @@ CREATE TABLE IF NOT EXISTS segments (
     text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_segments_stream_ts ON segments(stream_id, ts);
+-- One row per continuous recording ("take"): a new one starts each time ffmpeg (re)connects.
+-- Audio lives in AUDIO_DIR/<stream_id>/<id>/000000.mp3, 000001.mp3 … each seg_seconds long.
+CREATE TABLE IF NOT EXISTS recordings (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+    started REAL NOT NULL,
+    length REAL NOT NULL DEFAULT 0,
+    seg_seconds INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recordings_stream ON recordings(stream_id, started);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY,
@@ -65,6 +82,16 @@ class DB:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.executescript(SCHEMA)
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(segments)")}
+            if "rec_id" not in cols:  # upgrade from the first version
+                self.conn.execute("ALTER TABLE segments ADD COLUMN rec_id INTEGER")
+                self.conn.execute("ALTER TABLE segments ADD COLUMN rec_offset REAL")
+            scols = {r[1] for r in self.conn.execute("PRAGMA table_info(streams)")}
+            if "position" not in scols:  # upgrade: keep the old alphabetical order as the starting order
+                self.conn.execute("ALTER TABLE streams ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+                ids = [r[0] for r in self.conn.execute("SELECT id FROM streams ORDER BY name COLLATE NOCASE")]
+                for i, sid in enumerate(ids):
+                    self.conn.execute("UPDATE streams SET position=? WHERE id=?", (i, sid))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
             self.conn.commit()
@@ -105,8 +132,80 @@ class DB:
                (time.time(), level, stream_id, message[:2000]))
         print(f"[{level}] {'#' + str(stream_id) + ' ' if stream_id else ''}{message}", flush=True)
 
-    def prune(self, retention_days):
+    def prune(self, retention_days, audio_days=0, active_recs=()):
         now = time.time()
         if retention_days > 0:
             self.x("DELETE FROM segments WHERE ts < ?", (now - retention_days * 86400,))
         self.x("DELETE FROM logs WHERE ts < ?", (now - 14 * 86400,))
+        if audio_days > 0:
+            self.prune_audio(now - audio_days * 86400, set(active_recs))
+
+    def prune_audio(self, cutoff, active=()):
+        """Delete audio recorded before cutoff; drop recordings with nothing left.
+        Returns (files deleted, bytes freed)."""
+        files = freed = 0
+
+        def remove(path):
+            nonlocal files, freed
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+            except OSError:
+                return
+            files += 1
+            freed += size
+
+        for rec in self.q("SELECT * FROM recordings WHERE started < ?", (cutoff,)):
+            folder = rec_dir(rec)
+            whole = rec["started"] + rec["length"] < cutoff and rec["id"] not in active
+            # a file is old once its last second is before the cutoff
+            n = int((cutoff - rec["started"]) // rec["seg_seconds"])
+            try:
+                names = sorted(f for f in os.listdir(folder) if f.endswith(".mp3"))
+            except FileNotFoundError:
+                names = []
+            for name in names:
+                if whole or int(name[:-4]) < n:
+                    remove(os.path.join(folder, name))
+            if whole:
+                shutil.rmtree(folder, ignore_errors=True)
+                self.x("DELETE FROM recordings WHERE id=?", (rec["id"],))
+        return files, freed
+
+    def delete_stream_audio(self, stream_id):
+        self.x("DELETE FROM recordings WHERE stream_id=?", (stream_id,))
+        shutil.rmtree(os.path.join(AUDIO_DIR, str(int(stream_id))), ignore_errors=True)
+
+
+def data_storage_status(data_dir=None, mountinfo="/proc/self/mountinfo"):
+    """Is the data folder stored somewhere that survives a container update?
+
+    Returns (ok, message). Settings, users, streams and recordings all live in DATA_DIR,
+    so it must be mapped to a folder on the host (e.g. /mnt/user/appdata/transcriber-2000).
+    Docker otherwise gives it a throwaway volume that Unraid discards on every update."""
+    data_dir = os.path.realpath(data_dir or DATA_DIR)
+    try:
+        with open(mountinfo) as f:
+            mounts = [line.split() for line in f]
+    except OSError:
+        return True, ""  # not Linux / can't tell — don't nag
+    if not os.path.exists("/.dockerenv"):
+        return True, ""  # running outside Docker (development)
+    best = None
+    for m in mounts:
+        point = m[4].replace("\\040", " ")
+        if data_dir == point or data_dir.startswith(point.rstrip("/") + "/"):
+            if best is None or len(point) > len(best[4]):
+                best = m
+    hint = ("Your settings, users, streams, transcripts and recordings will be lost the next time the "
+            "container is updated. In Unraid, edit the container and add a Path: container path /data, "
+            "host path /mnt/user/appdata/transcriber-2000.")
+    if best is None or best[4] == "/":
+        return False, "The /data folder isn't mapped to your server. " + hint
+    if re.search(r"volumes/[0-9a-f]{64}/_data", best[3]):
+        return False, "/data is in a temporary Docker volume, not a folder on your server. " + hint
+    return True, ""
+
+
+def rec_dir(rec):
+    return os.path.join(AUDIO_DIR, str(int(rec["stream_id"])), str(int(rec["id"])))

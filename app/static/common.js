@@ -77,6 +77,41 @@ function wirePasswordDialog() {
   });
 }
 
+// ---- Theme: "auto" follows the device, "light"/"dark" override it. Saved per browser.
+const THEME_ICONS = {
+  auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
+};
+function getTheme() {
+  try { const t = localStorage.getItem("theme"); return t === "light" || t === "dark" ? t : "auto"; } catch (e) { return "auto"; }
+}
+function setTheme(t) {
+  try { t === "auto" ? localStorage.removeItem("theme") : localStorage.setItem("theme", t); } catch (e) {}
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  document.querySelectorAll(".theme-seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.theme === t)));
+  window.dispatchEvent(new Event("themechange"));
+}
+function themePickerHTML() {
+  const cur = getTheme();
+  return `<div class="theme-seg" role="group" aria-label="Theme">` +
+    ["auto", "light", "dark"].map(t =>
+      `<button type="button" data-theme="${t}" aria-pressed="${t === cur}" title="${t === "auto" ? "Match this device" : t[0].toUpperCase() + t.slice(1) + " mode"}">${THEME_ICONS[t]}${t[0].toUpperCase() + t.slice(1)}</button>`
+    ).join("") + `</div>`;
+}
+function mountThemePicker(el) {
+  el.innerHTML = themePickerHTML();
+  el.addEventListener("click", e => {
+    const b = e.target.closest(".theme-seg button");
+    if (!b) return;
+    e.stopPropagation();  // keep the user menu open while switching
+    setTheme(b.dataset.theme);
+  });
+}
+// Redraw anything colour-dependent when the device switches light/dark in Auto mode.
+try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => window.dispatchEvent(new Event("themechange"))); } catch (e) {}
+
 const PW_DIALOG = `
 <dialog id="pw-dialog"><form method="dialog">
   <h3>Change password</h3><p class="lede">Use at least 8 characters.</p>
@@ -93,7 +128,7 @@ async function mountTopbar(active) {
   el.innerHTML = `
     ${active === "app" ? `<button class="btn ghost icon only-mobile" id="toggle-sidebar" aria-label="Streams">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>` : ""}
-    <a class="brand" href="/"><span class="brand-mark"><span class="brand-bars"><span style="height:6px"></span><span style="height:14px"></span><span style="height:9px"></span></span></span>Transcriber</a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/favicon.svg" alt="">Audio Transcriber - 2000</a>
     <div class="spacer"></div>
     <a class="nav-link hide-mobile ${active === "app" ? "active" : ""}" href="/">Streams</a>
     ${me.is_admin ? `<a class="nav-link hide-mobile ${active === "admin" ? "active" : ""}" href="/admin">Admin</a>` : ""}
@@ -104,10 +139,14 @@ async function mountTopbar(active) {
         <div class="label">Signed in as ${esc(me.username)}${me.is_admin ? " · admin" : ""}</div>
         <a class="mobile-item" href="/">Streams</a>
         ${me.is_admin ? `<a class="mobile-item" href="/admin">Admin</a>` : ""}
+        <hr><div class="label">Theme</div>
+        <div id="menu-theme"></div>
+        <hr>
         <button onclick="openPasswordDialog()">Change password</button>
         <hr><button class="danger" onclick="signOut()">Sign out</button>
       </div>
     </div>`;
+  mountThemePicker(document.getElementById("menu-theme"));
   document.body.insertAdjacentHTML("beforeend", PW_DIALOG);
   wirePasswordDialog();
   return me;
