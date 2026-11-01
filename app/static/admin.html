@@ -109,6 +109,34 @@
         <label class="field" style="max-width:320px"><span>Keep transcripts for (days)</span><input type="number" name="retention_days" min="0" max="3650">
           <small>0 keeps everything forever. Lines stay after their audio is deleted.</small></label>
       </div>
+
+      <div class="card">
+        <h2>Sign in with Microsoft</h2>
+        <p class="lede">Let people sign in with their Microsoft work or school account (Entra ID, formerly Azure AD).
+          Create an app registration in the Azure portal and paste its details here. Usernames and passwords keep working.</p>
+        <label class="field"><span>Redirect URI</span>
+          <div class="inline-row"><input type="text" id="sso-redirect" readonly>
+          <button type="button" class="btn" onclick="copyRedirect()">Copy</button></div>
+          <small>In the app registration, add this under Authentication → Web → Redirect URIs. Open this page from the address people use to reach the app, so the URI matches.</small>
+        </label>
+        <div class="grid-2">
+          <label class="field"><span>Directory (tenant) ID</span><input type="text" name="sso_tenant_id" placeholder="1234abcd-… or contoso.com" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Application (client) ID</span><input type="text" name="sso_client_id" placeholder="1234abcd-…" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Client secret</span><input type="password" name="sso_client_secret" autocomplete="new-password">
+            <small id="sso-secret-hint">The secret's <b>Value</b>, not its ID.</small></label>
+          <label class="field"><span>Allowed email domains</span><input type="text" name="sso_allowed_domains" placeholder="contoso.com, fabrikam.com" spellcheck="false">
+            <small>Blank lets anyone in the tenant sign in.</small></label>
+          <label class="field"><span>Button text</span><input type="text" name="sso_button_label" maxlength="60" placeholder="Sign in with Microsoft"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="sso_auto_create">
+          <span>Create accounts automatically<small>Someone signing in with Microsoft for the first time gets a regular user account. Make them an admin on the Users tab. If this is off, add them first with their Microsoft sign-in name (e.g. jo@contoso.com) as the username.</small></span></label>
+        <label class="check"><input type="checkbox" name="sso_enabled">
+          <span>Turn on Microsoft sign-in<small>Shows a “Sign in with Microsoft” button on the sign-in page.</small></span></label>
+        <div class="inline-row" style="align-items:center;flex-wrap:wrap">
+          <button type="button" class="btn" onclick="testSSO()">Test connection</button>
+          <div class="test-result" id="sso-test-result"></div>
+        </div>
+      </div>
       <button class="btn primary">Save settings</button>
     </form>
   </section>

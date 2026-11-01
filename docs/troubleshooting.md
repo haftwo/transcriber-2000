@@ -61,3 +61,13 @@ Browsers cache icons and stylesheets. Hard-refresh (**⇧⌘R** on a Mac, **Ctrl
 ## Forgot the admin password
 
 Another admin can reset it in **Admin → Users**. If there's no other admin, see [Lost the only admin password](administration.md#lost-the-only-admin-password).
+
+## Microsoft sign-in
+
+- **AADSTS50011, redirect URI doesn't match**: the URI registered in Azure must match the one in Admin → Settings → Sign in with Microsoft exactly, including `https://` and no trailing slash. Behind a reverse proxy or Cloudflare Tunnel, set `PUBLIC_URL` (see [Administration](administration.md#the-redirect-uri-has-to-match-exactly)).
+- **AADSTS7000215, invalid client secret**: you pasted the secret's ID instead of its **Value**, or it has expired. Create a new secret and paste its Value.
+- **AADSTS700016, application not found**: the client ID is wrong, or it belongs to a different tenant than the one entered.
+- **"That sign-in link has expired"**: the sign-in cookie didn't survive the round trip to Microsoft. Over HTTPS set `COOKIE_SECURE=1`; over plain `http://` set it to `0`.
+- **"… doesn't have an account here"**: *Create accounts automatically* is off. Add the user with their Microsoft sign-in name as the username, or turn it on.
+- Failed Microsoft sign-ins are written to Admin → Activity log with the reason.
+

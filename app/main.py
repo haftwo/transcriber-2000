@@ -6,6 +6,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -17,6 +18,7 @@ from starlette.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from . import sso
 from .auth import RateLimiter, hash_password, load_secret, verify_password
 from .db import AUDIO_DIR, DATA_DIR, DB, DEFAULT_SETTINGS, data_storage_status, rec_dir
 from .worker import Manager, pcm_to_wav, whisper_request
@@ -88,8 +90,8 @@ def clean_category(cat):
 
 def check_username(name):
     name = (name or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9._@-]{2,40}", name):
-        raise HTTPException(400, "Usernames are 2-40 letters, numbers, dots, dashes or underscores")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{2,100}", name):
+        raise HTTPException(400, "Usernames are 2-100 letters, numbers, dots, dashes, underscores or @")
     return name
 
 
@@ -134,7 +136,9 @@ async def health(request):
 
 # auth -------------------------------------------------------------------------
 async def api_setup_status(request):
-    return JSONResponse({"needs_setup": db.one("SELECT COUNT(*) n FROM users")["n"] == 0})
+    s = db.settings()
+    return JSONResponse({"needs_setup": db.one("SELECT COUNT(*) n FROM users")["n"] == 0,
+                         "sso": sso_ready(s), "sso_label": s.get("sso_button_label") or "Sign in with Microsoft"})
 
 
 async def api_setup(request):
@@ -169,6 +173,86 @@ async def api_login(request):
 async def api_logout(request):
     request.session.clear()
     return JSONResponse({"ok": True})
+
+
+# sign in with Microsoft -------------------------------------------------------
+def sso_ready(s=None):
+    s = s or db.settings()
+    return s.get("sso_enabled") == "1" and all(s.get(k) for k in ("sso_tenant_id", "sso_client_id", "sso_client_secret"))
+
+
+def sso_redirect_uri(request):
+    base = os.environ.get("PUBLIC_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    return base + sso.CALLBACK_PATH
+
+
+def login_error(message):
+    return RedirectResponse("/login?" + urllib.parse.urlencode({"error": message}), 303)
+
+
+async def sso_start(request):
+    s = db.settings()
+    if not sso_ready(s):
+        return login_error("Sign in with Microsoft isn't set up")
+    try:
+        url, pending = await asyncio.to_thread(sso.begin, s, sso_redirect_uri(request))
+    except sso.SSOError as e:
+        db.log("error", f"Microsoft sign-in couldn't start: {e}")
+        return login_error(str(e))
+    request.session["sso"] = pending
+    return RedirectResponse(url, 303)
+
+
+async def sso_callback(request):
+    qp = request.query_params
+    pending = request.session.pop("sso", None)
+    ip = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "?")
+    if qp.get("error"):
+        msg = (qp.get("error_description") or qp["error"]).splitlines()[0][:300]
+        if qp["error"] == "access_denied":
+            msg = "Sign-in was cancelled"
+        db.log("warning", f"Microsoft sign-in refused from {ip}: {msg}")
+        return login_error(msg)
+    s = db.settings()
+    if not sso_ready(s):
+        return login_error("Sign in with Microsoft isn't set up")
+    if not pending or not qp.get("code") or qp.get("state") != pending.get("state"):
+        return login_error("That sign-in link has expired. Please try again.")
+    try:
+        claims = await asyncio.to_thread(sso.finish, s, pending, qp["code"])
+        username = sso.username_for(claims)
+    except sso.SSOError as e:
+        db.log("warning", f"Microsoft sign-in failed from {ip}: {e}")
+        return login_error(str(e))
+
+    domains = [d.strip() for d in s.get("sso_allowed_domains", "").split(",") if d.strip()]
+    if domains and username.rsplit("@", 1)[-1] not in domains:
+        db.log("warning", f"Microsoft sign-in by '{username}' refused: domain not allowed")
+        return login_error(f"{username} isn't allowed to sign in here")
+
+    oid = claims["oid"]
+    user = db.one("SELECT * FROM users WHERE sso_oid=?", (oid,))
+    if not user:
+        # an existing account with the same name, not yet linked to a Microsoft account
+        user = db.one("SELECT * FROM users WHERE username=? AND sso_oid IS NULL", (username,))
+        if user:
+            db.x("UPDATE users SET sso_oid=? WHERE id=?", (oid, user["id"]))
+            db.log("info", f"User '{user['username']}' linked to their Microsoft account")
+        elif db.one("SELECT id FROM users WHERE username=?", (username,)):
+            db.log("warning", f"Microsoft sign-in by '{username}' refused: name belongs to another Microsoft account")
+            return login_error(f"The username {username} is already linked to a different Microsoft account")
+        elif s.get("sso_auto_create") == "1":
+            uid = db.x("INSERT INTO users(username, pw_hash, is_admin, created, sso_oid) VALUES (?, '', 0, ?, ?)",
+                       (username, time.time(), oid))
+            user = db.one("SELECT * FROM users WHERE id=?", (uid,))
+            db.log("info", f"User '{username}' created on first Microsoft sign-in")
+        else:
+            db.log("warning", f"Microsoft sign-in by '{username}' refused: no matching user")
+            return login_error(f"{username} doesn't have an account here. Ask an admin to add you.")
+    request.session.clear()
+    request.session["uid"] = user["id"]
+    db.log("info", f"{user['username']} signed in with Microsoft")
+    return RedirectResponse("/", 303)
 
 
 async def api_me(request):
@@ -474,7 +558,8 @@ async def api_events(request):
 async def api_users(request):
     admin = need_admin(request)
     if request.method == "GET":
-        return JSONResponse(db.q("SELECT id, username, is_admin, created FROM users ORDER BY username"))
+        return JSONResponse(db.q("SELECT id, username, is_admin, created, sso_oid IS NOT NULL AS sso "
+                                 "FROM users ORDER BY username"))
     data = await body(request)
     username = check_username(data.get("username"))
     check_password(data.get("password"))
@@ -512,15 +597,26 @@ async def api_user(request):
     return JSONResponse({"ok": True})
 
 
+def settings_out():
+    """Settings for the admin page. The client secret never leaves the server."""
+    out = db.settings()
+    out["sso_client_secret_set"] = bool(out.get("sso_client_secret"))
+    out["sso_client_secret"] = ""
+    return out
+
+
 async def api_settings(request):
-    need_admin(request)
+    admin = need_admin(request)
     if request.method == "GET":
-        return JSONResponse(db.settings())
+        return JSONResponse(settings_out())
     data = await body(request)
     numeric = {"chunk_seconds": (5, 60), "silence_threshold": (0, 5000),
                "retention_days": (0, 3650), "max_concurrent": (1, 8),
                "vad_filter": (0, 1), "use_prompt": (0, 1), "record_audio": (0, 1),
-               "audio_bitrate": (32, 320), "audio_retention_days": (0, 3650), "video_thumbs": (0, 1)}
+               "audio_bitrate": (32, 320), "audio_retention_days": (0, 3650), "video_thumbs": (0, 1),
+               "sso_enabled": (0, 1), "sso_auto_create": (0, 1)}
+    before = db.settings()
+    updates = {}
     for key, val in data.items():
         if key not in DEFAULT_SETTINGS:
             continue
@@ -535,8 +631,54 @@ async def api_settings(request):
             val = clean_url(val).rstrip("/")
         elif key == "default_language":
             val = clean_lang(val)
+        elif key.startswith("sso_"):
+            val = str(val or "").strip()
+            try:
+                if key == "sso_tenant_id":
+                    val = sso.clean_tenant(val)
+                elif key == "sso_client_id":
+                    val = sso.clean_client_id(val)
+                elif key == "sso_allowed_domains":
+                    val = sso.clean_domains(val)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            if key == "sso_client_secret" and not val:
+                continue  # blank = keep the saved secret
+            if key == "sso_button_label":
+                val = val[:60] or DEFAULT_SETTINGS[key]
+            if key == "sso_client_secret" and len(val) > 500:
+                raise HTTPException(400, "That client secret is too long")
+        updates[key] = val
+    merged = {**before, **updates}
+    if merged.get("sso_enabled") == "1" and not sso_ready(merged):
+        raise HTTPException(400, "To turn on Microsoft sign-in, fill in the tenant, client ID and client secret")
+    for key, val in updates.items():
         db.set_setting(key, val)
-    return JSONResponse(db.settings())
+    sso_keys = ("sso_enabled", "sso_tenant_id", "sso_client_id", "sso_client_secret", "sso_allowed_domains", "sso_auto_create")
+    if any(updates.get(k, before.get(k)) != before.get(k) for k in sso_keys):
+        state = "on" if merged.get("sso_enabled") == "1" else "off"
+        db.log("info", f"{admin['username']} changed Microsoft sign-in settings (now {state})")
+    return JSONResponse(settings_out())
+
+
+async def api_test_sso(request):
+    """Check the tenant, client ID and secret by asking Microsoft for an app-only token."""
+    need_admin(request)
+    data = await body(request)
+    s = db.settings()
+    try:
+        tenant = sso.clean_tenant(data.get("sso_tenant_id") or s["sso_tenant_id"])
+        client_id = sso.clean_client_id(data.get("sso_client_id") or s["sso_client_id"])
+    except ValueError as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+    secret = (data.get("sso_client_secret") or "").strip() or s["sso_client_secret"]
+    if not (tenant and client_id and secret):
+        return JSONResponse({"ok": False, "message": "Fill in the tenant, client ID and client secret first"})
+    try:
+        await asyncio.to_thread(sso.check_credentials, tenant, client_id, secret)
+    except sso.SSOError as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+    return JSONResponse({"ok": True, "message": "Connected — Microsoft accepted the tenant, client ID and secret"})
 
 
 async def api_prune_audio(request):
@@ -632,6 +774,8 @@ routes = [
     Route("/login", page_login),
     Route("/admin", page_admin),
     Route("/healthz", health),
+    Route("/auth/microsoft", sso_start),
+    Route(sso.CALLBACK_PATH, sso_callback),
     Route("/favicon.ico", lambda request: FileResponse(os.path.join(STATIC, "favicon.ico"), media_type="image/x-icon")),
     Route("/api/setup", api_setup_status, methods=["GET"]),
     Route("/api/setup", api_setup, methods=["POST"]),
@@ -652,6 +796,7 @@ routes = [
     Route("/api/admin/users/{uid:int}", api_user, methods=["PATCH", "DELETE"]),
     Route("/api/admin/settings", api_settings, methods=["GET", "PUT"]),
     Route("/api/admin/test-whisper", api_test_whisper, methods=["POST"]),
+    Route("/api/admin/test-sso", api_test_sso, methods=["POST"]),
     Route("/api/admin/prune-audio", api_prune_audio, methods=["POST"]),
     Route("/api/admin/logs", api_logs),
     Route("/api/admin/stats", api_stats),

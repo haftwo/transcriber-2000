@@ -21,7 +21,7 @@ Transcription is done by a [whisper-asr-webservice](https://github.com/ahmetoner
 - **Play any line back** in a waveform player, widen the clip, and save it as an MP3
 - **Video streams get a filmstrip**: thumbnails along the playback timeline, with a bigger preview on hover
 - **Many streams at once**, each with its own language, grouped under **Video** and **Audio** headings you drag them between
-- **Sign-in protected**, with an admin page for users, Whisper settings, stream health and an activity log
+- **Sign-in protected**, with optional Sign in with Microsoft (Entra ID), and an admin page for users, Whisper settings, stream health and an activity log
 - **Light, dark or automatic theme**, remembered per browser
 - **Recovers on its own**: dropped streams reconnect, and settings survive container updates
 - **No build step**: Python on the server, plain HTML/CSS/JS in the browser

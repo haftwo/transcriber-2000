@@ -23,6 +23,14 @@ DEFAULT_SETTINGS = {
     "audio_bitrate": "96",          # kbps, MP3
     "audio_retention_days": "7",    # recordings older than this are deleted (0 = keep forever)
     "video_thumbs": "1",            # streams with video: save a thumbnail every few seconds for the player timeline
+    # Sign in with Microsoft (Entra ID / Azure AD)
+    "sso_enabled": "0",
+    "sso_tenant_id": "",            # Directory (tenant) ID, or a verified domain like contoso.com
+    "sso_client_id": "",            # Application (client) ID of the app registration
+    "sso_client_secret": "",        # client secret value; never sent back to the browser
+    "sso_allowed_domains": "",      # e.g. "contoso.com, fabrikam.com"; blank = anyone in the tenant
+    "sso_auto_create": "1",         # first Microsoft sign-in creates a (non-admin) user
+    "sso_button_label": "Sign in with Microsoft",
 }
 
 SCHEMA = """
@@ -90,6 +98,9 @@ class DB:
             rcols = {r[1] for r in self.conn.execute("PRAGMA table_info(recordings)")}
             if "thumb_seconds" not in rcols:  # upgrade: video thumbnails (0 = this take has none)
                 self.conn.execute("ALTER TABLE recordings ADD COLUMN thumb_seconds INTEGER NOT NULL DEFAULT 0")
+            ucols = {r[1] for r in self.conn.execute("PRAGMA table_info(users)")}
+            if "sso_oid" not in ucols:  # upgrade: the Microsoft account (Entra object ID) linked to this user
+                self.conn.execute("ALTER TABLE users ADD COLUMN sso_oid TEXT")
             scols = {r[1] for r in self.conn.execute("PRAGMA table_info(streams)")}
             if "category" not in scols:  # upgrade: sidebar groups ('' = not sorted yet, 'video' or 'audio')
                 self.conn.execute("ALTER TABLE streams ADD COLUMN category TEXT NOT NULL DEFAULT ''")

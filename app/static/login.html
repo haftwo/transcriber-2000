@@ -23,6 +23,12 @@
     <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
     <label class="field" id="confirm-wrap" hidden><span>Confirm password</span><input type="password" name="confirm" autocomplete="new-password"></label>
     <button class="btn primary" id="submit">Sign in</button>
+    <div id="sso" hidden>
+      <div class="auth-or"><span>or</span></div>
+      <a class="btn sso-btn" id="sso-btn" href="/auth/microsoft">
+        <svg viewBox="0 0 21 21" width="16" height="16" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+        <span id="sso-label">Sign in with Microsoft</span></a>
+    </div>
   </form>
   <div class="auth-theme" id="auth-theme"></div>
 </main>
@@ -32,7 +38,14 @@ mountThemePicker(document.getElementById("auth-theme"));
 let setupMode = false;
 const f = document.getElementById("form"), err = document.getElementById("err");
 
+const urlError = new URLSearchParams(location.search).get("error");
+if (urlError) { err.textContent = urlError; err.hidden = false; history.replaceState(null, "", "/login"); }
+
 api("GET", "/api/setup").then(r => {
+  if (r.sso && !r.needs_setup) {
+    document.getElementById("sso-label").textContent = r.sso_label;
+    document.getElementById("sso").hidden = false;
+  }
   if (!r.needs_setup) return;
   setupMode = true;
   document.getElementById("title").textContent = "Create your admin account";

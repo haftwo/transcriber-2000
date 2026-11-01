@@ -33,7 +33,9 @@ A red banner appears at the top of the Admin page if `/data` isn't stored on the
 - **Make or remove admin.**
 - **Delete** a user.
 
-Usernames ignore case. Passwords must be at least 8 characters. You can't delete your own account, and the last admin can't lose admin rights.
+People who sign in with Microsoft show **· Microsoft** next to their role. Reset password gives them a password as well, if you want them to have both.
+
+Usernames ignore case and can be up to 100 characters, so email addresses work. Passwords must be at least 8 characters. You can't delete your own account, and the last admin can't lose admin rights.
 
 ## Settings
 
@@ -56,6 +58,45 @@ Click **Save settings** at the bottom. Most changes apply to the next chunk; rec
 
 The activity log keeps 14 days.
 
+## Sign in with Microsoft (Entra ID / Azure AD)
+
+Lets people sign in with their Microsoft work or school account. Username and password sign-in keeps working alongside it, so you can't lock yourself out.
+
+### 1. Register the app in Azure
+
+1. In the [Azure portal](https://portal.azure.com), open **Microsoft Entra ID → App registrations → New registration**.
+2. Name it (for example *Audio Transcriber - 2000*). Under **Supported account types**, choose **Accounts in this organizational directory only**.
+3. Under **Redirect URI**, pick **Web** and paste the **Redirect URI** shown in Admin → Settings → Sign in with Microsoft. It's `https://<your-address>/auth/microsoft/callback`. Microsoft only accepts `https://`, except for `http://localhost`.
+4. Click **Register**. From the **Overview** page, copy the **Application (client) ID** and **Directory (tenant) ID**.
+5. Open **Certificates & secrets → New client secret**. Copy the secret's **Value** straight away; Azure only shows it once. Note the expiry date: sign-in stops working when it expires, so set a reminder to make a new one.
+
+No API permissions are needed beyond the default *User.Read*.
+
+### 2. Turn it on
+
+In **Admin → Settings → Sign in with Microsoft**, paste the tenant ID, client ID and secret, click **Test connection**, tick **Turn on Microsoft sign-in**, then **Save settings**. A **Sign in with Microsoft** button appears on the sign-in page.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Directory (tenant) ID | — | Your tenant's ID, or one of its verified domains (`contoso.com`). `common`, `organizations` and `consumers` aren't accepted, because they'd let any Microsoft account in |
+| Application (client) ID | — | From the app registration's Overview page |
+| Client secret | — | The secret's **Value**. Stored in the database on `/data` and never sent back to the browser; leave the box blank to keep the saved one |
+| Allowed email domains | blank | Comma-separated, e.g. `contoso.com, fabrikam.com`. Blank lets anyone in the tenant sign in |
+| Button text | Sign in with Microsoft | The label on the sign-in page |
+| Create accounts automatically | On | A first-time Microsoft sign-in creates a regular (non-admin) user named after their sign-in name, e.g. `jo@contoso.com`. Promote them on the Users tab. When off, add the user first with that sign-in name as the username |
+| Turn on Microsoft sign-in | Off | Shows the button. Can only be turned on once the tenant, client ID and secret are filled in |
+
+### How accounts are matched
+
+- The first time someone signs in with Microsoft, they're linked to the user with the same username (their sign-in name, in lower case), or a new user is created.
+- After that they're matched by their Microsoft account's ID, so renaming them in Entra doesn't create a second user.
+- A username already linked to one Microsoft account can't be taken over by a different one.
+- To restrict who can sign in more tightly, in Entra open **Enterprise applications → your app → Properties**, set **Assignment required** to **Yes**, and assign users or groups under **Users and groups**.
+
+### The redirect URI has to match exactly
+
+The app builds the redirect URI from the address the browser used. If you reach the app through a reverse proxy or Cloudflare Tunnel and Microsoft says the redirect URI doesn't match, set the `PUBLIC_URL` environment variable to the address people use (for example `https://transcriber.example.com`) and register `PUBLIC_URL/auth/microsoft/callback` in Azure.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -65,6 +106,7 @@ The activity log keeps 14 days.
 | `COOKIE_SECURE` | `0` | Set to `1` when the site is only reached over HTTPS |
 | `SECRET_KEY` | generated | Signs sign-in cookies. If unset, a key is created once and kept in `/data/secret.key` |
 | `DATA_DIR` | `/data` | Where everything is stored |
+| `PUBLIC_URL` | blank | The address people use to reach the app, e.g. `https://transcriber.example.com`. Only needed if Microsoft sign-in reports a redirect URI mismatch |
 
 ## What's in /data
 
@@ -105,6 +147,7 @@ Unraid's Appdata Backup plugin covers it if `/mnt/user/appdata` is included.
 ## Security
 
 - Passwords are stored as salted scrypt hashes.
+- Microsoft sign-in uses OpenID Connect with PKCE, state and nonce. The ID token comes directly from Microsoft over HTTPS and its issuer, audience, expiry and nonce are checked. Only one tenant is trusted. Users created by Microsoft sign-in have no password until an admin sets one.
 - Eight wrong passwords from one IP within 10 minutes block that IP for 10 minutes.
 - Sign-in uses an HTTP-only session cookie, valid for 30 days. Set `COOKIE_SECURE=1` behind HTTPS.
 - Every API call that changes something must carry an `X-Requested-With: fetch` header, which other websites can't add. This blocks cross-site request forgery.

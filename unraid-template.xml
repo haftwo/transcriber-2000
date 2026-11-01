@@ -17,4 +17,5 @@
   <Config Name="Whisper URL" Target="WHISPER_URL" Default="http://192.168.1.10:9000" Mode="" Description="Starting value only — change later in Admin &gt; Settings" Type="Variable" Display="always" Required="false" Mask="false">http://192.168.1.10:9000</Config>
   <Config Name="Time zone" Target="TZ" Default="Australia/Melbourne" Mode="" Description="Used for timestamps in downloaded transcripts" Type="Variable" Display="advanced" Required="false" Mask="false">Australia/Melbourne</Config>
   <Config Name="Secure cookies" Target="COOKIE_SECURE" Default="0" Mode="" Description="Set to 1 if you only reach the site over HTTPS (e.g. Cloudflare Tunnel)" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Public URL" Target="PUBLIC_URL" Default="" Mode="" Description="Optional. The address people use to reach the site, e.g. https://transcriber.example.com. Only needed if Sign in with Microsoft reports a redirect URI mismatch" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
 </Container>

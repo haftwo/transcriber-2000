@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 — 2026-11-02
+
+### Added
+
+- **Sign in with Microsoft** (Entra ID, formerly Azure AD): Admin → Settings → Sign in with Microsoft takes a tenant, client ID and secret, with a **Test connection** button and the redirect URI to copy. Optional allowed email domains, automatic account creation and button text. Passwords keep working alongside it
+- Users linked to a Microsoft account are marked on the Users tab
+- `PUBLIC_URL` environment variable, for when the redirect URI behind a proxy doesn't match
+
+### Changed
+
+- Usernames can be up to 100 characters, so email addresses fit
+
 ## 1.1.0 — 2026-10-31
 
 ### Added

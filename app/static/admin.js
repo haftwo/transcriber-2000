@@ -49,7 +49,7 @@ async function loadUsers() {
   const users = await api("GET", "/api/admin/users");
   $("user-rows").innerHTML = users.map(u => `<tr>
     <td><b>${esc(u.username)}</b>${u.id === me.id ? ' <span class="muted">(you)</span>' : ""}</td>
-    <td>${u.is_admin ? '<span class="badge">Admin</span>' : '<span class="muted">User</span>'}</td>
+    <td>${u.is_admin ? '<span class="badge">Admin</span>' : '<span class="muted">User</span>'}${u.sso ? ' <span class="muted" title="Linked to a Microsoft account">· Microsoft</span>' : ""}</td>
     <td class="muted">${fmtDate(u.created)}</td>
     <td class="actions">
       <button class="btn sm ghost" onclick="openUserDialog(${u.id}, '${esc(u.username)}')">Reset password</button>
@@ -107,6 +107,31 @@ async function loadSettings() {
     if (!el) continue;
     if (el.type === "checkbox") el.checked = v === "1"; else el.value = v;
   }
+  $("sso-redirect").value = location.origin + "/auth/microsoft/callback";
+  f.sso_client_secret.placeholder = s.sso_client_secret_set ? "•••••••• saved — leave blank to keep" : "";
+  $("sso-secret-hint").innerHTML = s.sso_client_secret_set
+    ? "A secret is saved. Paste a new <b>Value</b> only to replace it."
+    : "The secret's <b>Value</b>, not its ID.";
+}
+
+async function copyRedirect() {
+  const el = $("sso-redirect");
+  try { await navigator.clipboard.writeText(el.value); toast("Redirect URI copied"); }
+  catch { el.select(); toast("Press Ctrl+C / ⌘C to copy", true); }
+}
+
+async function testSSO() {
+  const f = $("settings-form"), el = $("sso-test-result");
+  el.className = "test-result"; el.textContent = "Testing…";
+  try {
+    const r = await api("POST", "/api/admin/test-sso", {
+      sso_tenant_id: f.sso_tenant_id.value.trim(),
+      sso_client_id: f.sso_client_id.value.trim(),
+      sso_client_secret: f.sso_client_secret.value.trim(),
+    });
+    el.className = "test-result " + (r.ok ? "ok" : "bad");
+    el.textContent = (r.ok ? "✓ " : "✕ ") + r.message;
+  } catch (ex) { el.className = "test-result bad"; el.textContent = "✕ " + ex.message; }
 }
 
 $("settings-form").addEventListener("submit", async e => {
